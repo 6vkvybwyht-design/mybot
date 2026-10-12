@@ -278,7 +278,7 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
 
 
 def load_config(path: Path | None = None) -> AppConfig:
-    path = path or PROJECT_ROOT / "config.yaml"
+    path = path or Path(os.getenv("BOT_CONFIG") or PROJECT_ROOT / "config.yaml")
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:

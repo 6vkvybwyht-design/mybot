@@ -42,18 +42,50 @@ news:
   poll_interval_sec: 150
   max_age_min: 60
   max_headlines: 15
-  # Конкретні стрічки перевіряються на етапі 3
+  # Перевірено 2026-10-12: усі віддають 200 і мають дату публікації
+  # (крім Investing Energy — для неї береться час, коли бот уперше побачив новину).
   feeds:
-    - name: Reuters World (via Google News)
-      url: https://news.google.com/rss/search?q=oil+OR+crude+when:1h&hl=en-US&gl=US&ceid=US:en
+    - name: Google News · oil
+      url: https://news.google.com/rss/search?q=oil+OR+crude+OR+OPEC+when:1h&hl=en-US&gl=US&ceid=US:en
+    - name: Google News · EIA/inventories
+      url: https://news.google.com/rss/search?q=EIA+OR+%22crude+inventories%22+OR+%22oil+stocks%22+when:1h&hl=en-US&gl=US&ceid=US:en
     - name: OilPrice.com
       url: https://oilprice.com/rss/main
+    - name: Rigzone
+      url: https://www.rigzone.com/news/rss/rigzone_latest.aspx
+    - name: Guardian · oil
+      url: https://www.theguardian.com/business/oil/rss
+    - name: Investing · energy
+      url: https://www.investing.com/rss/commodities_Energy.rss
+    - name: Investing · economy
+      url: https://www.investing.com/rss/news_11.rss
+    - name: MarketWatch
+      url: https://feeds.content.dowjones.io/public/rss/mw_topstories
     - name: BBC World
       url: https://feeds.bbci.co.uk/news/world/rss.xml
+    - name: BBC Business
+      url: https://feeds.bbci.co.uk/news/business/rss.xml
+    - name: Al Jazeera
+      url: https://www.aljazeera.com/xml/rss/all.xml
   keywords:
     - oil
     - crude
-    - brent
+    - brent crude
+    - gasoline
+    - natural gas
+    - hormuz
+    - houthi
+    - red sea
+    - venezuela
+    - libya
+    - iraq
+    - ukraine
+    - drone strike
+    - interest rate
+    - rate cut
+    - jobs report
+    - nonfarm
+    - recession
     - wti
     - opec
     - eia
@@ -64,7 +96,6 @@ news:
     - saudi
     - russia
     - israel
-    - strait of hormuz
     - sanctions
     - fed
     - powell
