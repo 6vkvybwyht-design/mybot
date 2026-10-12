@@ -1,0 +1,139 @@
+# Налаштування бота. Секрети — лише в .env, тут їх бути не повинно.
+# Усі часи — UTC, якщо не вказано інше.
+
+market:
+  symbol: USOUSDT
+  category: linear
+  # Комісія taker у відсотках за одну сторону угоди (0.055 = 0,055%)
+  taker_fee_pct: 0.055
+  rest_base_url: https://api.bybit.com
+  ws_public_url: wss://stream.bybit.com/v5/public/linear
+  orderbook_depth: 50
+  kline_intervals: [1, 5, 15, 60]   # хвилини
+  kline_limit: 200                  # скільки свічок тягнути на кожен таймфрейм
+  trades_window_hours: 24           # ковзне вікно угод у пам'яті
+
+network:
+  timeout_sec: 10
+  retries: 3
+  backoff_base_sec: 1.0             # затримка: 1, 2, 4 ... с
+  ws_ping_interval_sec: 20
+  ws_stale_sec: 30                  # тригери не рахуються, якщо даних немає довше
+  ws_alarm_sec: 120                 # після цього бот пише про проблему з'єднання
+
+whales:
+  threshold_mode: percentile        # percentile | fixed
+  percentile: 99                    # для режиму percentile, за останні 24 год
+  fixed_usdt: 50000                 # для режиму fixed
+  merge_window_ms: 1000             # склеювання угод в одному напрямку
+  windows_min: [1, 5, 15]
+
+indicators:
+  rsi_period: 14
+  ema_periods: [9, 21, 50]
+  atr_period: 14
+  volume_avg_period: 20
+  levels_lookback_hours: [4, 12]    # мін/макс вікно пошуку рівнів
+  levels_pivot_width: 3             # свічок з кожного боку для локального екстремуму
+  trend_ema_fast: 21
+  trend_ema_slow: 50
+
+news:
+  poll_interval_sec: 150
+  max_age_min: 60
+  max_headlines: 15
+  # Конкретні стрічки перевіряються на етапі 3
+  feeds:
+    - name: Reuters World (via Google News)
+      url: https://news.google.com/rss/search?q=oil+OR+crude+when:1h&hl=en-US&gl=US&ceid=US:en
+    - name: OilPrice.com
+      url: https://oilprice.com/rss/main
+    - name: BBC World
+      url: https://feeds.bbci.co.uk/news/world/rss.xml
+  keywords:
+    - oil
+    - crude
+    - brent
+    - wti
+    - opec
+    - eia
+    - api inventory
+    - refinery
+    - pipeline
+    - iran
+    - saudi
+    - russia
+    - israel
+    - strait of hormuz
+    - sanctions
+    - fed
+    - powell
+    - inflation
+    - cpi
+    - tariff
+
+analysis:
+  timeout_sec: 60
+  max_tokens: 1500
+  prompt_file: prompts/analysis.md
+  max_pct_without_confirmation: 75
+  event_warning_min: 15
+
+alerts:
+  enabled_by_default: true
+  dry_run: false                    # true — сигнали лише логуються, не надсилаються
+  loop_interval_sec: 15
+  sensitivity: medium               # low | medium | high
+  sensitivity_levels:               # скільки тригерів в одному напрямку потрібно
+    high: 2
+    medium: 3
+    low: 4
+  cooldown_min: 12
+  opposite_cooldown_min: 5
+  min_model_pct: 60                 # нижче — сповіщення не надсилається
+  max_model_calls_per_hour: 6
+  quiet_before_event_min: 15
+  quiet_after_event_min: 15
+  triggers:
+    whales_delta_mult: 3.0          # дельта китів за 5 хв > N × середнє |дельти| за 24 год
+    volume_mult: 2.5                # обсяг 5-хв свічки > N × середнє за 20 свічок
+    oi_change_pct_15m: 1.0          # зміна OI за 15 хв, %
+    orderbook_band_pct: 0.3         # ±% від ціни
+    orderbook_imbalance: 0.70       # частка однієї сторони
+    orderbook_hold_sec: 30
+    impulse_atr_mult: 1.0           # рух за 1 хв > N × ATR(14) на 5 хв
+
+tracking:
+  horizons_min: [5, 10, 15]
+
+storage:
+  db_path: data/bot.db
+
+logging:
+  level: INFO
+  file: logs/bot.log
+  max_bytes: 5000000
+  backup_count: 5
+
+display:
+  timezone: UTC                     # наприклад Europe/Kyiv
+
+# Календар подій. Разові події також можна додати командою /event.
+calendar:
+  recurring:
+    # Щотижневий звіт EIA про запаси нафти: середа 10:30 за Нью-Йорком
+    # (14:30 UTC влітку, 15:30 UTC взимку — тому тут вказано tz)
+    - name: Звіт EIA про запаси нафти
+      weekday: wed                  # mon tue wed thu fri sat sun
+      time: "10:30"
+      tz: America/New_York
+    # Звіт API (American Petroleum Institute): вівторок 16:30 за Нью-Йорком
+    - name: Звіт API про запаси нафти
+      weekday: tue
+      time: "16:30"
+      tz: America/New_York
+  one_time:
+    # Приклад формату (UTC):
+    # - name: Засідання ФРС
+    #   at: "2026-10-28 18:00"
+    []
