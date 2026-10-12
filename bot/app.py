@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from bot.analysis import AnalysisError, AnalysisResult, Analyzer
@@ -109,10 +110,22 @@ class App:
         except AnalysisError as exc:
             log.warning("Аналіз не вдався: %s", exc)
             return AnalysisOutcome(snapshot, None, f"Помилка аналізу: {exc}")
+        self._ensure_event_flag(snapshot, result)
         pred_id = None
         if save:
             pred_id = await self.save(source, snapshot, result, triggers, trigger_direction)
         return AnalysisOutcome(snapshot, result, None, pred_id)
+
+    def _ensure_event_flag(self, snapshot: Snapshot, result: AnalysisResult) -> None:
+        """Попередження про подію поруч обов'язкове — додаємо, якщо модель його пропустила."""
+        now = datetime.fromtimestamp(snapshot.ts_ms / 1000, timezone.utc)
+        warn = self.cfg.analysis.event_warning_min
+        flags = result.data.setdefault("risk_flags", [])
+        for ev in self.calendar.near(now, warn, warn):
+            if not any(ev.name.lower() in f.lower() for f in flags):
+                mins = ev.minutes_from(now)
+                when = f"через {mins:.0f} хв" if mins >= 0 else f"{-mins:.0f} хв тому"
+                flags.append(f"{ev.name} {when}")
 
     async def save(
         self, source: str, snapshot: Snapshot, result: AnalysisResult,

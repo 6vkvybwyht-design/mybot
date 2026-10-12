@@ -1,0 +1,27 @@
+[Unit]
+Description=USOUSDT Bybit analytics Telegram bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=usousdt
+Group=usousdt
+WorkingDirectory=/opt/usousdt-bot
+ExecStart=/opt/usousdt-bot/.venv/bin/python -m bot.main
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+# Код 2 — помилка конфігурації або невірний токен: перезапуск не допоможе.
+RestartPreventExitStatus=2
+TimeoutStopSec=30
+
+# Захист: бот може писати лише у свої теки.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/usousdt-bot/data /opt/usousdt-bot/logs
+
+[Install]
+WantedBy=multi-user.target

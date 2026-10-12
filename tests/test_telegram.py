@@ -119,6 +119,14 @@ async def test_analyze_failure_shows_raw_numbers(tg, app):
     assert await app.db.count_predictions() == 0
 
 
+async def test_event_flag_is_mandatory(tg, app):
+    from datetime import timedelta
+    from bot.news.calendar import Event
+    app.calendar.add(Event("Звіт EIA", datetime.now(timezone.utc) + timedelta(minutes=9), "user"))
+    text = (await tg(BTN_ANALYZE))[-1].text
+    assert "Звіт EIA через" in text and "Ризики" in text
+
+
 async def test_wait_message_has_no_levels(tg, app):
     app.fake_model.default = WAIT
     text = (await tg(BTN_ANALYZE))[-1].text

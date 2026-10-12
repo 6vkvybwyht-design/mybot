@@ -41,20 +41,27 @@ class AlertManager:
     # ---------- стан даних ----------
 
     async def check_connection(self, now_ms: int) -> bool:
-        """True, якщо дані WebSocket свіжі. Пише власнику про довгу відсутність даних і відновлення."""
-        age = self.app.market.ws.seconds_since_data(now_ms)
-        if age is None:
-            age = (now_ms / 1000) - self.app.started_at
+        """True, якщо ринкові дані WebSocket свіжі.
+
+        Про проблему з'єднання пише лише тоді, коли сокет мовчить зовсім (немає навіть pong):
+        на тонкому ринку угод може не бути кілька хвилин, і це не збій.
+        """
+        ws = self.app.market.ws
+        started_age = (now_ms / 1000) - self.app.started_at
+        alive_age = ws.seconds_since_alive(now_ms)
+        alive_age = started_age if alive_age is None else alive_age
+        data_age = ws.seconds_since_data(now_ms)
+        data_age = started_age if data_age is None else data_age
         net = self.cfg.network
-        if age > net.ws_alarm_sec and not self.connection_alarm:
+        if alive_age > net.ws_alarm_sec and not self.connection_alarm:
             self.connection_alarm = True
-            log.error("WebSocket мовчить %.0f с", age)
-            await self.notify(f"🔌 Немає даних з Bybit уже {age / 60:.0f} хв. Перевіряю з'єднання; "
+            log.error("WebSocket мовчить %.0f с", alive_age)
+            await self.notify(f"🔌 Немає зв'язку з Bybit уже {alive_age / 60:.0f} хв. Перепідключаюся; "
                               "автосигнали призупинено.")
-        elif age <= net.ws_stale_sec and self.connection_alarm:
+        elif alive_age <= net.ws_stale_sec and self.connection_alarm:
             self.connection_alarm = False
             await self.notify("✅ З'єднання з Bybit відновлено.")
-        return age <= net.ws_stale_sec
+        return data_age <= net.ws_stale_sec
 
     def sample_book(self, now_ms: int) -> None:
         ws = self.app.market.ws

@@ -29,7 +29,8 @@ class BybitWS:
         self.trades = trades if trades is not None else TradeStore(market.trades_window_hours * 3_600_000)
         self.book = OrderBook()
         self.connected = False
-        self.last_msg_ms: int | None = None
+        self.last_msg_ms: int | None = None     # останні ринкові дані (угода або стакан)
+        self.last_alive_ms: int | None = None   # будь-яке повідомлення, включно з pong
         self.connects = 0
         self._stop = asyncio.Event()
         self._max_backoff = 60.0
@@ -44,6 +45,12 @@ class BybitWS:
             return None
         return ((now or now_ms()) - self.last_msg_ms) / 1000
 
+    def seconds_since_alive(self, now: int | None = None) -> float | None:
+        """Скільки з'єднання мовчить зовсім (на тонкому ринку дані можуть не йти, а pong — іде)."""
+        if self.last_alive_ms is None:
+            return None
+        return ((now or now_ms()) - self.last_alive_ms) / 1000
+
     def seed_trades(self, rows: list[dict[str, Any]]) -> int:
         """Засів вікна угод з REST /v5/market/recent-trade."""
         added = 0
@@ -53,6 +60,7 @@ class BybitWS:
         return added
 
     def handle(self, msg: dict[str, Any]) -> None:
+        self.last_alive_ms = now_ms()
         topic = msg.get("topic", "")
         if topic.startswith("publicTrade."):
             for t in msg.get("data", []):

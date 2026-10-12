@@ -214,6 +214,9 @@ async def test_ws_reconnects_and_parses():
     assert sessions[0]["args"] == ["publicTrade.USOUSDT", "orderbook.50.USOUSDT"]
     assert len(ws.trades) == 2 and ws.trades.last.side == 1
     assert ws.book.ready and ws.last_msg_ms is not None
+    pong_ms = ws.last_msg_ms
+    ws.handle({"success": True, "ret_msg": "pong", "op": "ping"})
+    assert ws.last_msg_ms == pong_ms and ws.seconds_since_alive() < 1  # pong — не ринкові дані
 
 
 async def test_ws_sends_ping_and_detects_silence():

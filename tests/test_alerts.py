@@ -113,15 +113,19 @@ async def test_analysis_failure_does_not_send(mgr, app, sent):
 
 async def test_stale_data_and_connection_alarm(mgr, app, sent):
     now = int(time.time() * 1000)
-    app.market.ws.last_msg_ms = now - 40_000
+    ws = app.market.ws
+    ws.last_msg_ms = ws.last_alive_ms = now - 40_000
     assert await mgr.tick(now) == "stale"
     assert sent == []
-    app.market.ws.last_msg_ms = now - 130_000
+    # тонкий ринок: угод немає 3 хв, але pong приходить — це не збій
+    ws.last_msg_ms, ws.last_alive_ms = now - 180_000, now - 5_000
+    assert await mgr.tick(now) == "stale" and sent == []
+    ws.last_alive_ms = now - 130_000
     assert await mgr.tick(now) == "stale"
     assert await mgr.tick(now + 1000) == "stale"
-    assert len(sent) == 1 and "Немає даних" in sent[0]
-    app.market.ws.last_msg_ms = now + 2000
-    await mgr.check_connection(now + 2000)
+    assert len(sent) == 1 and "Немає зв'язку" in sent[0]
+    ws.last_msg_ms = ws.last_alive_ms = now + 2000
+    assert await mgr.check_connection(now + 2000) is True
     assert "відновлено" in sent[-1]
 
 
