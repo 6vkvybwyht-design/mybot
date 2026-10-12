@@ -184,3 +184,11 @@ def test_missing_key_or_model():
         Analyzer(CFG, s)
     with pytest.raises(AnalysisError):
         Analyzer(CFG, s.model_copy(update={"anthropic_model": None}), client=object())
+
+
+def test_prompt_is_about_mt5_cfd():
+    text = CFG.prompt_path.read_text(encoding="utf-8").lower()
+    for banned in ("кит", "стакан", "open interest", "funding", "order_flow", "orderbook", "cvd", "ф'ючерс"):
+        assert banned not in text, banned
+    for needed in ("тіков", "eia", "опек+", "costs.round_trip_pct", "spread_state", "5 хв"):
+        assert needed in text, needed
