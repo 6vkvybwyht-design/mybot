@@ -153,7 +153,8 @@ tracking:
   horizons_min: [5, 10, 15]
 
 storage:
-  db_path: data/bot.db
+  # Окрема база для MT5-версії: прогнози Bybit (USOUSDT) не змішуються з USOUSD.s
+  db_path: data/bot_mt5.db
 
 logging:
   level: INFO
