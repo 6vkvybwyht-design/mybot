@@ -105,7 +105,12 @@ news:
 
 analysis:
   timeout_sec: 60
-  max_tokens: 1500
+  # Ліміт включає «роздуми» моделі, тому з запасом
+  max_tokens: 8000
+  # low | medium | high — глибина міркувань: вище = точніше, але довше і дорожче
+  effort: medium
+  # Якщо модель відмовиться відповідати (фільтр безпеки), API сам повторить запит на іншій моделі
+  refusal_fallback: true
   prompt_file: prompts/analysis.md
   max_pct_without_confirmation: 75
   event_warning_min: 15
@@ -123,6 +128,7 @@ alerts:
   opposite_cooldown_min: 5
   min_model_pct: 60                 # нижче — сповіщення не надсилається
   max_model_calls_per_hour: 6
+  filtered_recheck_min: 3         # пауза після відфільтрованого моделлю сигналу
   quiet_before_event_min: 15
   quiet_after_event_min: 15
   triggers:

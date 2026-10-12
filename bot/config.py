@@ -92,6 +92,8 @@ class NewsConfig(_Model):
 class AnalysisConfig(_Model):
     timeout_sec: float = Field(gt=0)
     max_tokens: int = Field(gt=0)
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = "medium"
+    refusal_fallback: bool = True
     prompt_file: str
     max_pct_without_confirmation: int = Field(gt=50, le=100)
     event_warning_min: int = Field(ge=0)
@@ -117,6 +119,7 @@ class AlertsConfig(_Model):
     opposite_cooldown_min: int = Field(ge=0)
     min_model_pct: int = Field(ge=50, le=100)
     max_model_calls_per_hour: int = Field(ge=0)
+    filtered_recheck_min: int = Field(ge=0, default=3)
     quiet_before_event_min: int = Field(ge=0)
     quiet_after_event_min: int = Field(ge=0)
     triggers: TriggersConfig
