@@ -12,6 +12,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import BufferedInputFile, Message
 
 from bot.app import App
+from bot.market.hours import NO_CONNECTION
 from bot.news.calendar import parse_event_command
 from bot.telegram.format import fmt_dt, format_stats, format_status, plural_triggers
 from bot.telegram.keyboard import (
@@ -71,18 +72,16 @@ def build_router(app: App) -> Router:
             mins = ev.minutes_from(now)
             left = f"{mins:.0f} хв" if mins < 120 else f"{mins / 60:.1f} год"
             next_ev = f"{escape(ev.name)} — {fmt_dt(ev.at, app.tz)} (через {left})"
-        last = market.last_tick
-        if market.connected:
-            try:
-                await market.fetch_raw([5], activity=False)
-                last = market.last_tick
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Статус: не вдалося оновити тік: %s", exc)
+        state = await market.state()
+        last = state.tick or market.last_tick
+        market_line = None
+        if state.status != NO_CONNECTION:
+            market_line = "🟢 відкритий" if state.is_open else f"🌙 закритий ({escape(state.reason or '')})"
         await m.answer(
             format_status(
                 symbol=app.cfg.mt5.symbol, price=last["bid"] if last else None, tick=app.tick,
                 mt5_connected=market.connected, tick_age=last["age_sec"] if last else None,
-                mt5_error=market.source.last_error,
+                mt5_error=market.source.last_error, market=market_line,
                 alerts_on=app.alerts_enabled, sensitivity=app.sensitivity, need=app.need_triggers,
                 dry_run=app.cfg.alerts.dry_run, next_event=next_ev, tz=app.tz,
                 news_ok=bool(app.news and app.news.available), predictions=await app.db.count_predictions(),

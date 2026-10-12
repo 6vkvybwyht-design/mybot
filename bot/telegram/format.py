@@ -99,6 +99,11 @@ def format_analysis(
     return "\n".join(lines)
 
 
+def format_market_closed(symbol: str, reason: str | None) -> str:
+    return (f"🌙 <b>{escape(symbol)}</b>: ринок закритий" + (f" — {escape(reason)}" if reason else "")
+            + ".\nАналіз не виконується, автосповіщення призупинені до відкриття.")
+
+
 def format_failure(error: str, snapshot: dict | None, *, symbol: str, tz: str, tick: float | None,
                    ts_ms: int | None = None) -> str:
     """Аналіз не вдався: помилка + сирі ключові цифри."""
@@ -120,7 +125,7 @@ def format_failure(error: str, snapshot: dict | None, *, symbol: str, tz: str, t
 
 def format_status(
     *, symbol: str, price: float | None, tick: float | None, mt5_connected: bool, tick_age: float | None,
-    mt5_error: str | None = None, alerts_on: bool, sensitivity: str, need: int, dry_run: bool, next_event: str | None, tz: str,
+    mt5_error: str | None = None, market: str | None = None, alerts_on: bool, sensitivity: str, need: int, dry_run: bool, next_event: str | None, tz: str,
     news_ok: bool, predictions: int, model: str,
 ) -> str:
     age = "немає даних" if tick_age is None else f"{tick_age:.0f} с тому"
@@ -129,6 +134,7 @@ def format_status(
     lines = [
         f"<b>{escape(symbol)}</b> · ціна {fmt_price(price, tick)}",
         f"MT5: {mt5}",
+        *([f"Ринок: {market}"] if market else []),
         f"Новини: {'🟢' if news_ok else '🔴 недоступні'}",
         f"Сповіщення: {'увімкнені' if alerts_on else 'вимкнені'}{' (dry-run)' if dry_run else ''}, "
         f"чутливість {sensitivity} (тригерів: {need})",

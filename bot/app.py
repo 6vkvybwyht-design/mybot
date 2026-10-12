@@ -10,11 +10,12 @@ from typing import Awaitable, Callable
 
 from bot.analysis import AnalysisError, AnalysisResult, Analyzer
 from bot.config import AppConfig
+from bot.market.hours import CLOSED
 from bot.market.mt5_source import MT5Error, MT5Unavailable
 from bot.news.calendar import Event, EventCalendar
 from bot.news.rss import NewsService
 from bot.snapshot import MarketService, Snapshot, SnapshotError, collect
-from bot.telegram.format import format_analysis, format_failure
+from bot.telegram.format import format_analysis, format_failure, format_market_closed
 from bot.tracking.db import Database
 
 log = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class AnalysisOutcome:
     result: AnalysisResult | None
     error: str | None
     prediction_id: int | None = None
+    market_closed: bool = False
 
 
 class App:
@@ -99,6 +101,10 @@ class App:
         save: bool = True,
     ) -> AnalysisOutcome:
         """Знімок -> модель -> (за потреби) запис у базу. Помилки не кидаються, а повертаються."""
+        if snapshot is None:
+            state = await self.market.state()
+            if state.status == CLOSED:
+                return AnalysisOutcome(None, None, state.reason, market_closed=True)
         try:
             snapshot = snapshot or await self.make_snapshot()
         except SnapshotError as exc:
@@ -154,6 +160,8 @@ class App:
 
     def render(self, outcome: AnalysisOutcome, kind: str = "manual", trigger_names: list[str] | None = None) -> str:
         symbol = self.cfg.mt5.symbol
+        if outcome.market_closed:
+            return format_market_closed(symbol, outcome.error)
         if outcome.result is None or outcome.snapshot is None:
             snap = outcome.snapshot
             return format_failure(

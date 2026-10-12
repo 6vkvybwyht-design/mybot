@@ -20,7 +20,7 @@ from bot.main import run
 from bot.telegram.keyboard import BTN_ANALYZE
 from tests.conftest import FakeModel
 from tests.fake_mt5 import FakeMT5
-from tests.helpers import CFG
+from tests.helpers import CFG_24_7 as CFG
 
 OWNER = 777
 

@@ -162,7 +162,7 @@ async def test_events_commands(tg, app):
 async def test_status_stats_export(tg, app):
     status = texts(await tg("/status"))[0]
     assert "USOUSD.s" in status and "MT5: 🟢 підключено" in status and "Модель: claude-opus-5-5" in status
-    assert "ціна 61.000" in status
+    assert "ціна 61.000" in status and "Ринок: 🟢 відкритий" in status
     stats = texts(await tg(BTN_STATS))[0]
     assert "7 днів" in stats and "Весь час" in stats
     reqs = await tg("/export")
@@ -170,6 +170,13 @@ async def test_status_stats_export(tg, app):
     await tg(BTN_ANALYZE)
     reqs = await tg("/export")
     assert isinstance(reqs[0], SendDocument) and reqs[0].caption == "Прогнозів: 1"
+
+
+async def test_closed_market_replies(tg, app):
+    app.fake_mt5.tick_age_sec = 900
+    text = texts(await tg(BTN_ANALYZE))[-1]
+    assert "🌙" in text and "ринок закритий" in text and app.fake_model.calls == 0
+    assert "Ринок: 🌙 закритий" in texts(await tg("/status"))[0]
 
 
 async def test_unknown_text_shows_help(tg):

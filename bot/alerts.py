@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from html import escape
 
 from bot.app import App, Notify
+from bot.market.hours import CLOSED
 from bot.market.mt5_source import MT5Error
 from bot.snapshot import RawMarket
 from bot.telegram.format import fmt_dt
@@ -29,6 +30,7 @@ class AlertManager:
         self.model_calls: deque[int] = deque()
         self.warned_events: set[tuple[str, int]] = set()
         self.spread_alarm = False
+        self.market_closed = False
         self.last_hits: list[TriggerHit] = []
         self._stop = asyncio.Event()
 
@@ -158,6 +160,15 @@ class AlertManager:
         market = self.app.market
         if not market.connected:
             return "no_connection"   # про втрату зв'язку власнику пише MT5Source
+        state = await market.state()
+        if not state.is_open:
+            if state.status == CLOSED and not self.market_closed:
+                log.info("Ринок закритий (%s) — автосповіщення призупинено", state.reason)
+            self.market_closed = state.status == CLOSED
+            return "market_closed" if state.status == CLOSED else "no_connection"
+        if self.market_closed:
+            log.info("Ринок відкрився — автосповіщення відновлено")
+            self.market_closed = False
         try:
             raw = await market.fetch_raw([5])
         except MT5Error as exc:

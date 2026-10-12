@@ -16,7 +16,8 @@ import pandas as pd
 
 from bot.config import AppConfig, Secrets
 from bot.market import indicators as ind
-from bot.market.mt5_source import Credentials, MT5Source, MT5Unavailable, Notify, SymbolSpec
+from bot.market.hours import CLOSED, NO_CONNECTION, OPEN, MarketState, session_closed_reason, stale_ticks_reason
+from bot.market.mt5_source import Credentials, MT5Error, MT5Source, MT5Unavailable, Notify, SymbolSpec
 from bot.news.calendar import EventCalendar
 from bot.news.rss import NewsService
 from bot.triggers import spread_warning
@@ -115,6 +116,24 @@ class MarketService:
         if results["tick"] is not None:
             self.last_tick = results["tick"]
         return RawMarket(now_ms, klines, results["tick"], results.get("tick_activity"), missing)
+
+    async def state(self) -> MarketState:
+        """Чи йдуть зараз торги: зв'язок з MT5, розклад сесії, свіжість тіків."""
+        if not self.connected:
+            return MarketState(NO_CONNECTION, self.source.last_error or "немає зв'язку з MT5")
+        now = datetime.fromtimestamp(self.source.clock(), timezone.utc)
+        reason = session_closed_reason(self.cfg.market.session, now)
+        if reason:
+            return MarketState(CLOSED, reason, self.last_tick)
+        try:
+            tick = await self.source.tick()
+        except MT5Unavailable as exc:
+            return MarketState(NO_CONNECTION, str(exc))
+        except MT5Error as exc:
+            return MarketState(CLOSED, f"немає котирувань: {exc}")
+        self.last_tick = tick
+        reason = stale_ticks_reason(tick.get("age_sec"), self.cfg.market.no_ticks_closed_sec)
+        return MarketState(CLOSED if reason else OPEN, reason, tick)
 
     def price(self, raw: RawMarket) -> float | None:
         """Ціна графіка — Bid (по ньому будуються свічки MT5)."""

@@ -31,6 +31,30 @@ def _check_tz(value: str) -> str:
     return value
 
 
+class WeeklyTime(_Model):
+    weekday: Weekday
+    time: time
+
+
+class SessionConfig(_Model):
+    """Розклад торгів у поясі tz (літній/зимовий час враховується автоматично)."""
+    tz: str
+    week_open: WeeklyTime
+    week_close: WeeklyTime
+    daily_break: tuple[time, time] | None = None
+
+    @field_validator("tz")
+    @classmethod
+    def _tz(cls, v: str) -> str:
+        return _check_tz(v)
+
+
+class MarketConfig(_Model):
+    # Нових тіків немає довше — вважаємо ринок закритим (на відкритому ринку ~30 тіків за хвилину)
+    no_ticks_closed_sec: int = Field(ge=10)
+    session: SessionConfig
+
+
 MT5_TIMEFRAMES = (1, 5, 15, 60)
 
 
@@ -218,6 +242,7 @@ class CalendarConfig(_Model):
 
 class AppConfig(_Model):
     mt5: MT5Config
+    market: MarketConfig
     network: NetworkConfig
     indicators: IndicatorsConfig
     news: NewsConfig

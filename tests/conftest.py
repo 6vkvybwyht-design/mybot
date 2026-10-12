@@ -11,7 +11,7 @@ from bot.news.calendar import EventCalendar
 from bot.snapshot import MarketService
 from bot.tracking.db import Database
 from tests.fake_mt5 import FakeMT5
-from tests.helpers import CFG
+from tests.helpers import CFG, CFG_24_7
 
 LONG = {"action": "long", "long_pct": 68, "short_pct": 32, "confidence": "medium", "summary": "Покупці <сильні>.",
         "reasons": ["Тіків ×2.8", "Пробій 61.35"], "entry": 61.0, "stop_loss": 60.8, "take_profit": 61.4,
@@ -37,7 +37,7 @@ class FakeModel:
         return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
 
 
-def mt5_market(fake=None, cfg=CFG):
+def mt5_market(fake=None, cfg=CFG_24_7):
     """MarketService на фейковому MetaTrader5 (без терміналу)."""
     fake = fake or FakeMT5()
     src = MT5Source(cfg.mt5, Credentials(), mt5_module=fake, clock=lambda: fake.now)
@@ -53,8 +53,8 @@ async def app(tmp_path):
     model = FakeModel()
     secrets = Secrets(telegram_bot_token=None, telegram_owner_id=1, anthropic_api_key=None,
                       anthropic_model="claude-opus-5-5")
-    analyzer = Analyzer(CFG, secrets, SimpleNamespace(beta=SimpleNamespace(messages=model)))
-    a = App(CFG, db=db, market=market, news=None, calendar=EventCalendar(CFG.calendar.model_copy(
+    analyzer = Analyzer(CFG_24_7, secrets, SimpleNamespace(beta=SimpleNamespace(messages=model)))
+    a = App(CFG_24_7, db=db, market=market, news=None, calendar=EventCalendar(CFG.calendar.model_copy(
         update={"recurring": []})), analyzer=analyzer)
     a.fake_model = model
     a.fake_mt5 = fake

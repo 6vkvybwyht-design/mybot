@@ -7,7 +7,7 @@ from bot.news.calendar import EventCalendar
 from bot.snapshot import SnapshotError, build_snapshot, collect
 from tests.conftest import mt5_market
 from tests.fake_mt5 import FakeMT5
-from tests.helpers import CFG
+from tests.helpers import CFG_24_7 as CFG
 
 BYBIT_ONLY = {"order_flow", "orderbook", "open_interest", "ticker", "long_short_accounts", "fees"}
 
