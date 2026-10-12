@@ -1,67 +1,79 @@
 import json
-import time
 
 import pytest
 
-from bot.market.bybit_ws import BybitWS
-from bot.market.trades import Trade
+from bot.market.mt5_source import MT5Unavailable
 from bot.news.calendar import EventCalendar
-from bot.snapshot import MarketService, SnapshotError, build_snapshot, collect
-from tests.fake_bybit import FakeBybit, rest_client
-from tests.helpers import CFG
+from bot.snapshot import SnapshotError, build_snapshot, collect
+from tests.conftest import mt5_market
+from tests.fake_mt5 import FakeMT5
+from tests.helpers import CFG_24_7 as CFG
+
+BYBIT_ONLY = {"order_flow", "orderbook", "open_interest", "ticker", "long_short_accounts", "fees"}
 
 
-def _market(fake):
-    ws = BybitWS(CFG.market, CFG.network)
-    return MarketService(CFG, rest=rest_client(fake, CFG), ws=ws)
-
-
-def _feed_ws(market, price=61.0):
-    now = int(time.time() * 1000)
-    for i in range(300):
-        market.ws.trades.add(Trade(now - 600_000 + i * 2000, price, 3.0, 1 if i % 3 else -1))
-    market.ws.book.apply("snapshot", {"b": [[str(price - 0.01), "500"], [str(price - 0.05), "2000"]],
-                                      "a": [[str(price + 0.01), "300"]], "u": 1})
-    market.ws.last_msg_ms = now
+async def _connected(fake=None):
+    market, fake = mt5_market(fake)
+    await market.source.connect()
+    return market, fake
 
 
 async def test_full_snapshot():
-    fake = FakeBybit()
-    market = _market(fake)
-    await market.start(with_ws=False)
+    market, _ = await _connected()
     assert market.instrument.tick_size == 0.001
-    assert len(market.ws.trades) == 50  # засів з recent-trade
-    _feed_ws(market)
     snap = await collect(CFG, market, calendar=EventCalendar(CFG.calendar))
     d = snap.data
-    assert d["symbol"] == "USOUSDT" and d["price"] == 61.0
-    assert d["fees"]["round_trip_pct"] == pytest.approx(0.11)
+    assert d["symbol"] == "USOUSD.s" and d["price"] == 61.0          # ціна графіка — Bid
+    assert d["quote"]["ask"] == pytest.approx(61.03) and d["quote"]["spread_points"] == pytest.approx(30)
+    assert d["costs"]["round_trip_pct"] == pytest.approx(0.03 / 61 * 100, abs=1e-4)
     assert set(d["tf_5m"]) >= {"rsi", "ema", "atr", "vwap_today", "support", "resistance", "current_unclosed"}
     assert d["trend"].keys() == {"15m", "60m"}
-    assert d["open_interest"]["change_1h_pct"] > 0
-    assert d["ticker"]["funding_rate_pct"] == pytest.approx(0.01)
-    assert d["orderbook"]["bid_share"] > 0.5
-    assert "5m" in d["order_flow"]["windows"]
+    assert d["tick_activity"]["ticks_5m"] > 0 and d["tick_activity"]["ratio_5m"] == pytest.approx(1, rel=0.1)
+    assert d["spread_state"]["widened"] is False and snap.spread_warning is None
+    assert not BYBIT_ONLY & d.keys()                                   # жодних китів, стакану, OI, funding
     assert "events" in d and snap.missing == []
     assert snap.baseline_direction in {"up", "down", "flat"}
-    json.loads(snap.to_json())  # серіалізується
-    assert len(snap.to_json()) < 12_000  # компактний
+    json.loads(snap.to_json())
+    assert len(snap.to_json()) < 8_000
 
 
-async def test_snapshot_survives_missing_sources():
-    fake = FakeBybit(fail={"/v5/market/open-interest", "/v5/market/account-ratio"})
-    market = _market(fake)
-    await market.start(with_ws=False)
+async def test_costs_include_commission():
+    cfg = CFG.model_copy(update={"market": CFG.market.model_copy(update={"commission_pct": 0.01})})
+    market, _ = mt5_market(cfg=cfg)
+    await market.source.connect()
+    snap = await collect(cfg, market)
+    c = snap.data["costs"]
+    assert c["commission_pct_per_side"] == 0.01
+    assert snap.cost_pct == pytest.approx(c["spread_pct"] + 0.02, abs=1e-4)
+
+
+async def test_spread_widening_flagged():
+    fake = FakeMT5()
+    market, _ = await _connected(fake)
+    fake.history_spread = 0.03                    # медіана за годину — звичайний спред
+    fake.spread = 0.09                            # поточний тік — утричі ширший
     snap = await collect(CFG, market)
-    assert "oi" in snap.missing and "ls" in snap.missing
-    assert "orderbook_ws" in snap.missing  # WS не запущено -> стакан застарілий
-    assert "open_interest" not in snap.data
-    assert snap.data["missing_sources"] == snap.missing
+    assert snap.data["spread_state"]["widened"] is True
+    assert snap.spread_warning and "спред" in snap.spread_warning
+
+
+async def test_snapshot_survives_missing_source():
+    fake = FakeMT5()
+    market, _ = await _connected(fake)
+    fake.copy_ticks_from = lambda *a: fake._fail((-1, "boom"))
+    snap = await collect(CFG, market)
+    assert "tick_activity" in snap.missing and "tick_activity" not in snap.data
 
 
 async def test_snapshot_without_5m_fails():
-    fake = FakeBybit(fail={"/v5/market/kline"})
-    market = _market(fake)
-    raw = await market.fetch_raw()
+    fake = FakeMT5()
+    market, _ = await _connected(fake)
+    raw = await market.fetch_raw([1, 15])
     with pytest.raises(SnapshotError):
         build_snapshot(CFG, market, raw)
+
+
+async def test_not_connected_raises():
+    market, _ = mt5_market()
+    with pytest.raises(MT5Unavailable):
+        await market.fetch_raw()

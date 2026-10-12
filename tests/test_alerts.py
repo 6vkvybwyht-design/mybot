@@ -11,8 +11,8 @@ from tests.conftest import LONG, SHORT, WAIT
 MIN = 60_000
 
 
-def hits(direction, n=3):
-    names = ["whales", "volume", "breakout", "impulse"]
+def hits(direction, n=2):
+    names = ["tick_volume", "impulse", "breakout"]
     return [TriggerHit(names[i], direction, "test") for i in range(n)]
 
 
@@ -32,17 +32,17 @@ def mgr(app, sent):
 async def test_signal_sent_and_saved(mgr, app, sent):
     now = int(time.time() * 1000)
     assert await mgr.process(hits(UP), now) == "sent"
-    assert "АВТОСИГНАЛ" in sent[0] and "Тригери: кити, обсяг, пробій рівня" in sent[0]
+    assert "АВТОСИГНАЛ" in sent[0] and "Тригери: тіковий обсяг, імпульс" in sent[0]
     rows = await app.db.predictions_with_outcomes()
     assert rows[0]["source"] == "alert" and rows[0]["trigger_direction"] == "up"
-    assert [t["name"] for t in rows[0]["triggers"]] == ["whales", "volume", "breakout"]
+    assert [t["name"] for t in rows[0]["triggers"]] == ["tick_volume", "impulse"]
 
 
 async def test_not_enough_triggers(mgr, app):
     now = int(time.time() * 1000)
-    assert await mgr.process(hits(UP, 2), now) == "no_signal"
+    assert await mgr.process(hits(UP, 1), now) == "no_signal"          # medium — потрібно 2
     await app.set_sensitivity("high")
-    assert await mgr.process(hits(UP, 2), now) == "sent"
+    assert await mgr.process(hits(UP, 1), now) == "sent"
 
 
 async def test_cooldowns(mgr, app, sent):
@@ -111,27 +111,27 @@ async def test_analysis_failure_does_not_send(mgr, app, sent):
     assert sent == []
 
 
-async def test_stale_data_and_connection_alarm(mgr, app, sent):
-    now = int(time.time() * 1000)
-    ws = app.market.ws
-    ws.last_msg_ms = ws.last_alive_ms = now - 40_000
-    assert await mgr.tick(now) == "stale"
-    assert sent == []
-    # тонкий ринок: угод немає 3 хв, але pong приходить — це не збій
-    ws.last_msg_ms, ws.last_alive_ms = now - 180_000, now - 5_000
-    assert await mgr.tick(now) == "stale" and sent == []
-    ws.last_alive_ms = now - 130_000
-    assert await mgr.tick(now) == "stale"
-    assert await mgr.tick(now + 1000) == "stale"
-    assert len(sent) == 1 and "Немає зв'язку" in sent[0]
-    ws.last_msg_ms = ws.last_alive_ms = now + 2000
-    assert await mgr.check_connection(now + 2000) is True
-    assert "відновлено" in sent[-1]
+async def test_no_connection_skips_quietly(mgr, app, sent):
+    app.market.source.connected = False
+    assert await mgr.tick() == "no_connection"
+    assert sent == [] and app.fake_model.calls == 0      # про зв'язок пише MT5Source, не цикл сигналів
+
+
+async def test_spread_warning_once_per_episode(mgr, app, sent):
+    fake = app.fake_mt5
+    fake.history_spread = 0.03                           # звичайний спред у тіках за годину
+    await mgr.tick()
+    fake.spread = 0.09                                   # поточний — утричі ширший
+    await mgr.tick()
+    await mgr.tick()
+    warn = [t for t in sent if "Спред" in t]
+    assert len(warn) == 1 and "не сигнал" in warn[0] and "90 п." in warn[0]
+    fake.spread = 0.03
+    await mgr.tick()
+    assert mgr.spread_alarm is False
 
 
 async def test_tick_end_to_end(mgr, app):
-    now = int(time.time() * 1000)
-    app.market.ws.last_msg_ms = now
-    result = await mgr.tick(now)
+    result = await mgr.tick()
     assert result in {"no_signal", "sent", "filtered", "cooldown"}
-    assert "/v5/market/kline" in app.fake_bybit.calls
+    assert "copy_rates_from_pos" in app.fake_mt5.calls and "copy_ticks_from" in app.fake_mt5.calls

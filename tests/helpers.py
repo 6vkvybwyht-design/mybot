@@ -8,6 +8,10 @@ import pandas as pd
 from bot.config import load_config
 
 CFG = load_config()
+# Для тестів ринок цілодобовий, щоб результат не залежав від дня тижня і години запуску.
+# Розклад сесій перевіряється окремо в test_market_hours.py з фіксованим часом.
+_ALWAYS = CFG.market.session.model_copy(update={"week_close": CFG.market.session.week_open, "daily_break": None})
+CFG_24_7 = CFG.model_copy(update={"market": CFG.market.model_copy(update={"session": _ALWAYS})})
 
 
 def candles(closes, interval_min=5, start_ms=1_760_000_000_000 // 300_000 * 300_000, spread=0.1, volume=100.0,

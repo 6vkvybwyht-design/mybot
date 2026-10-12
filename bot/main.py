@@ -18,9 +18,9 @@ def _summary(settings: Settings) -> str:
     n_events = len(c.calendar.recurring) + len(c.calendar.one_time)
     return "\n".join(
         [
-            f"Символ: {c.market.symbol} ({c.market.category}), комісія taker {c.market.taker_fee_pct}%",
-            f"Кити: {c.whales.threshold_mode}, чутливість: {c.alerts.sensitivity} "
-            f"(N={c.alerts.sensitivity_levels[c.alerts.sensitivity]})",
+            f"Символ: {c.mt5.symbol} (MT5{', сервер ' + s.mt5_server if s.mt5_server else ''}), "
+            f"таймфрейми {c.mt5.timeframes}",
+            f"Чутливість: {c.alerts.sensitivity} (N={c.alerts.sensitivity_levels[c.alerts.sensitivity]})",
             f"RSS-стрічок: {len(c.news.feeds)}, ключових слів: {len(c.news.keywords)}, подій у календарі: {n_events}",
             f"База: {c.db_path}",
             f"Лог: {c.log_path}",
@@ -28,26 +28,6 @@ def _summary(settings: Settings) -> str:
             f"Власник: {'задано' if s.telegram_owner_id else '—'}",
         ]
     )
-
-
-async def _start_market(market, notify) -> None:
-    """Bybit може бути недоступним при старті — пробуємо, доки не вийде, а бот тим часом працює."""
-    from bot.market.bybit_rest import BybitError
-
-    delay, notified = 5.0, False
-    while True:
-        try:
-            await market.start()
-            if notified:
-                await notify("✅ Дані Bybit знову доступні.")
-            return
-        except (BybitError, OSError) as exc:
-            log.error("Bybit недоступний при старті: %s; повтор через %.0f с", exc, delay)
-            if not notified:
-                notified = True
-                await notify(f"⚠️ Не вдається отримати дані Bybit: {exc}. Пробую далі.")
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 300)
 
 
 class FatalError(Exception):
@@ -100,9 +80,15 @@ async def run(settings: Settings, dry_run: bool = False) -> None:
         await bot.session.close()
         raise
 
+    async def notify(text: str) -> None:
+        try:
+            await bot.send_message(owner, text)
+        except Exception:  # noqa: BLE001 — збій Telegram не має валити фонові задачі
+            log.exception("Не вдалося надіслати повідомлення власнику")
+
     db = Database(cfg.db_path)
     await db.connect()
-    market = MarketService(cfg)
+    market = MarketService(cfg, secrets=secrets, notify=notify)
     news = NewsService(cfg.news, cfg.network)
     app = App(cfg, db=db, market=market, news=news, calendar=EventCalendar(cfg.calendar),
               analyzer=Analyzer(cfg, secrets))
@@ -112,16 +98,10 @@ async def run(settings: Settings, dry_run: bool = False) -> None:
     dp.update.outer_middleware(OwnerOnlyMiddleware(owner))
     dp.include_router(build_router(app))
 
-    async def notify(text: str) -> None:
-        try:
-            await bot.send_message(owner, text)
-        except Exception:  # noqa: BLE001 — збій Telegram не має валити фонові задачі
-            log.exception("Не вдалося надіслати повідомлення власнику")
-
     alerts = AlertManager(app, notify, dry_run=dry_run or None)
-    checker = OutcomeChecker(db, market.rest, cfg.tracking.horizons_min)
+    checker = OutcomeChecker(db, market.source, cfg.tracking.horizons_min)
+    await market.start()   # підключення до MT5 і перепідключення — у фоні, бот тим часом працює
     tasks = [
-        asyncio.create_task(_start_market(market, notify), name="market-start"),
         asyncio.create_task(news.run(), name="news"),
         asyncio.create_task(checker.run(), name="outcomes"),
         asyncio.create_task(alerts.run(), name="alerts"),
@@ -159,7 +139,7 @@ async def run(settings: Settings, dry_run: bool = False) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="bot", description="Telegram-бот аналітики USOUSDT")
+    parser = argparse.ArgumentParser(prog="bot", description="Telegram-бот аналітики USOUSD.s (MT5)")
     parser.add_argument("--check-config", action="store_true", help="лише перевірити конфіг і вийти")
     parser.add_argument("--dry-run", action="store_true", help="автосигнали лише логуються, не надсилаються")
     args = parser.parse_args(argv)

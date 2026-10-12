@@ -11,3 +11,5 @@ python-dotenv>=1.0
 PyYAML>=6.0
 tzdata>=2024.1
 
+# Офіційний пакет MT5 існує лише для Windows; на Linux тести підставляють фейк
+MetaTrader5>=5.0.45; sys_platform == "win32"

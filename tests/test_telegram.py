@@ -8,7 +8,7 @@ from aiogram.client.session.base import BaseSession
 from aiogram.methods import EditMessageText, SendDocument, SendMessage
 from aiogram.types import Chat, Message, Update, User
 
-from bot.telegram.format import format_analysis, format_failure, format_stats, fmt_usdt
+from bot.telegram.format import format_analysis, format_failure, format_stats
 from bot.telegram.handlers import build_router
 from bot.telegram.keyboard import BTN_ALERTS_OFF, BTN_ALERTS_ON, BTN_ANALYZE, BTN_STATS
 from bot.telegram.middleware import OwnerOnlyMiddleware
@@ -74,7 +74,7 @@ async def test_stranger_ignored(tg, app):
 
 async def test_start_shows_keyboard(tg):
     reqs = await tg("/start")
-    assert len(reqs) == 1 and "USOUSDT" in reqs[0].text
+    assert len(reqs) == 1 and "USOUSD.s" in reqs[0].text and "Bybit" not in reqs[0].text
     kb = [b.text for row in reqs[0].reply_markup.keyboard for b in row]
     assert BTN_ANALYZE in kb and BTN_STATS in kb
 
@@ -115,7 +115,8 @@ async def test_analyze_failure_shows_raw_numbers(tg, app):
     app.fake_model.queue = ["not json", "still not json"]
     reqs = await tg(BTN_ANALYZE)
     text = reqs[-1].text
-    assert "аналіз недоступний" in text and "Ціна" in text and "RSI" in text
+    assert "аналіз недоступний" in text and "Ціна" in text and "RSI" in text and "Спред 30 п." in text
+    assert "Кити" not in text and "Стакан" not in text
     assert await app.db.count_predictions() == 0
 
 
@@ -142,8 +143,8 @@ async def test_alerts_and_sensitivity_persist(tg, app):
     kb = [b.text for row in reqs[0].reply_markup.keyboard for b in row]
     assert BTN_ALERTS_ON in kb
     assert "Використання" in texts(await tg("/alerts maybe"))[0]
-    assert "2 тригери" in texts(await tg("/sensitivity high"))[0]
-    assert await app.db.get_setting("sensitivity") == "high" and app.need_triggers == 2
+    assert "1 тригер в одному" in texts(await tg("/sensitivity high"))[0]
+    assert await app.db.get_setting("sensitivity") == "high" and app.need_triggers == 1
     assert "Використання" in texts(await tg("/sensitivity extreme"))[0]
 
 
@@ -160,7 +161,8 @@ async def test_events_commands(tg, app):
 
 async def test_status_stats_export(tg, app):
     status = texts(await tg("/status"))[0]
-    assert "USOUSDT" in status and "WebSocket" in status and "Модель: claude-opus-5-5" in status
+    assert "USOUSD.s" in status and "MT5: 🟢 підключено" in status and "Модель: claude-opus-5-5" in status
+    assert "ціна 61.000" in status and "Ринок: 🟢 відкритий" in status
     stats = texts(await tg(BTN_STATS))[0]
     assert "7 днів" in stats and "Весь час" in stats
     reqs = await tg("/export")
@@ -170,6 +172,13 @@ async def test_status_stats_export(tg, app):
     assert isinstance(reqs[0], SendDocument) and reqs[0].caption == "Прогнозів: 1"
 
 
+async def test_closed_market_replies(tg, app):
+    app.fake_mt5.tick_age_sec = 900
+    text = texts(await tg(BTN_ANALYZE))[-1]
+    assert "🌙" in text and "ринок закритий" in text and app.fake_model.calls == 0
+    assert "Ринок: 🌙 закритий" in texts(await tg("/status"))[0]
+
+
 async def test_unknown_text_shows_help(tg):
     assert "/analyze" in texts(await tg("привіт"))[0]
 
@@ -177,12 +186,13 @@ async def test_unknown_text_shows_help(tg):
 # ---------- форматування ----------
 
 def test_format_alert_example():
-    t = format_analysis(LONG, symbol="USOUSDT", ts_ms=1_760_279_530_000, tz="UTC", tick=0.01, kind="alert",
-                        triggers=["кити", "обсяг"], missing=["news", "oi"])
-    assert t.startswith("🟢 <b>USOUSDT · АВТОСИГНАЛ</b> · дані на ")
+    t = format_analysis(LONG, symbol="USOUSD.s", ts_ms=1_760_279_530_000, tz="UTC", tick=0.01, kind="alert",
+                        triggers=["тіковий обсяг", "імпульс"], missing=["news", "tick_activity"])
+    assert t.startswith("🟢 <b>USOUSD.s · АВТОСИГНАЛ</b> · дані на ")
     assert "Вхід 61.00 · Стоп 60.80 · Тейк 61.40" in t
-    assert "• Кити +1.9 млн" in t and "⚠️ Ризики: funding &amp; OI" in t
-    assert "Тригери: кити, обсяг" in t and "Без даних: news" not in t and "новини" in t
+    assert "• Тіків ×2.8" in t and "⚠️ Ризики: EIA &amp; ОПЕК+" in t
+    assert "Тригери: тіковий обсяг, імпульс" in t and "Без даних: news" not in t
+    assert "новини" in t and "тікова активність" in t
 
 
 def test_format_time_zone():
@@ -194,15 +204,11 @@ def test_format_failure_without_snapshot():
     assert "аналіз недоступний" in format_failure("помилка <x>", None, symbol="X", tz="UTC", tick=None)
 
 
-def test_fmt_usdt():
-    assert fmt_usdt(1_900_000) == "+1.9 млн" and fmt_usdt(-35_000) == "−35 тис" and fmt_usdt(0) == "0"
-
-
 def test_format_stats_empty_and_full():
     from tests.test_tracking import row
     empty = format_stats([("7 днів", compute([], [5, 10, 15], 0.11))], 0.11)
     assert "прогнозів 0" in empty
     full = format_stats([("Весь час", compute([row(1, "manual", "long", 65, 0.5),
-                                                row(2, "alert", "short", 30, -0.3, "down", ["whales"])],
+                                                row(2, "alert", "short", 30, -0.3, "down", ["tick_volume"])],
                                                [5, 10, 15], 0.11))], 0.11)
-    assert "Калібрування" in full and "кити" in full and "Бот vs" in full
+    assert "Калібрування" in full and "тіковий обсяг" in full and "Бот vs" in full

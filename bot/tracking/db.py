@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     snapshot_json TEXT NOT NULL,
     baseline_direction TEXT,
     prompt_version TEXT,
-    model TEXT
+    model TEXT,
+    cost_pct REAL
 );
 CREATE INDEX IF NOT EXISTS ix_predictions_created ON predictions(created_ms);
 
@@ -89,7 +90,15 @@ class Database:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.executescript(SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Колонки, додані після першої версії бази."""
+        async with self.db.execute("PRAGMA table_info(predictions)") as cur:
+            cols = {r["name"] for r in await cur.fetchall()}
+        if "cost_pct" not in cols:
+            await self.db.execute("ALTER TABLE predictions ADD COLUMN cost_pct REAL")
 
     async def close(self) -> None:
         if self._db:
@@ -148,19 +157,20 @@ class Database:
         baseline_direction: str | None = None,
         prompt_version: str | None = None,
         model: str | None = None,
+        cost_pct: float | None = None,
     ) -> int:
         r = response or {}
         cur = await self.db.execute(
             """INSERT INTO predictions(created_ms, source, price, action, long_pct, short_pct, confidence,
                    entry, stop_loss, take_profit, trigger_direction, triggers_json, response_json,
-                   snapshot_json, baseline_direction, prompt_version, model)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   snapshot_json, baseline_direction, prompt_version, model, cost_pct)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 created_ms, source, price, r.get("action"), r.get("long_pct"), r.get("short_pct"),
                 r.get("confidence"), r.get("entry"), r.get("stop_loss"), r.get("take_profit"),
                 trigger_direction, json.dumps(triggers or [], ensure_ascii=False),
                 json.dumps(response, ensure_ascii=False) if response is not None else None,
-                json.dumps(snapshot, ensure_ascii=False), baseline_direction, prompt_version, model,
+                json.dumps(snapshot, ensure_ascii=False), baseline_direction, prompt_version, model, cost_pct,
             ),
         )
         await self.db.commit()

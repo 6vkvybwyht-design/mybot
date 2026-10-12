@@ -1,6 +1,6 @@
 """Знімок ринку: усе, що бачить модель, в одному JSON-сумісному словнику.
 
-Запуск з консолі (етап 2/3): python -m bot.snapshot
+Запуск з консолі: python -m bot.snapshot (потрібен запущений термінал MT5)
 """
 
 from __future__ import annotations
@@ -8,20 +8,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
 
-from bot.config import AppConfig
+from bot.config import AppConfig, Secrets
 from bot.market import indicators as ind
-from bot.market.bybit_rest import BybitError, BybitRest, Instrument
-from bot.market.bybit_ws import BybitWS
-from bot.market.whales import WhaleAnalyzer
+from bot.market.hours import CLOSED, NO_CONNECTION, OPEN, MarketState, session_closed_reason, stale_ticks_reason
+from bot.market.mt5_source import Credentials, MT5Error, MT5Source, MT5Unavailable, Notify, SymbolSpec
 from bot.news.calendar import EventCalendar
 from bot.news.rss import NewsService
+from bot.triggers import spread_warning
 
 log = logging.getLogger(__name__)
 
@@ -36,82 +35,120 @@ def _pct(new: float | None, old: float | None) -> float | None:
     return round((new - old) / old * 100, 3)
 
 
+def costs(spread_pct: float | None, commission_pct: float) -> dict[str, Any]:
+    """Витрати на угоду «вхід + вихід» у %: спред платиться один раз, комісія — двічі."""
+    round_trip = None if spread_pct is None else round(spread_pct + 2 * commission_pct, 4)
+    return {"spread_pct": spread_pct, "commission_pct_per_side": commission_pct, "round_trip_pct": round_trip}
+
+
 @dataclass
 class RawMarket:
-    """Сирі дані з REST за один прохід. Відсутні джерела — None."""
+    """Сирі дані з MT5 за один прохід. Відсутні джерела — None."""
     ts_ms: int
     klines: dict[int, pd.DataFrame]
-    ticker: dict[str, Any] | None
-    oi: pd.DataFrame | None
-    ls: pd.DataFrame | None
+    tick: dict[str, Any] | None
+    activity: dict[str, Any] | None
     missing: list[str] = field(default_factory=list)
 
 
 class MarketService:
-    """Тримає REST-клієнт, WebSocket і аналізатор китів."""
+    """Обгортка над MT5Source: нагляд за підключенням і збір сирих даних для знімка."""
 
-    def __init__(self, cfg: AppConfig, rest: BybitRest | None = None, ws: BybitWS | None = None):
+    def __init__(
+        self,
+        cfg: AppConfig,
+        source: MT5Source | None = None,
+        *,
+        secrets: Secrets | None = None,
+        notify: Notify | None = None,
+    ):
         self.cfg = cfg
-        self.rest = rest or BybitRest(cfg.market, cfg.network)
-        self.ws = ws or BybitWS(cfg.market, cfg.network)
-        self.whales = WhaleAnalyzer(cfg.whales, self.ws.trades)
-        self.instrument: Instrument | None = None
-        self._ws_task: asyncio.Task | None = None
+        creds = Credentials.from_secrets(secrets) if secrets else Credentials()
+        self.source = source or MT5Source(cfg.mt5, creds, notify=notify)
+        if notify is not None and self.source.notify is None:
+            self.source.notify = notify
+        self.last_tick: dict[str, Any] | None = None
+        self._task: asyncio.Task | None = None
 
-    async def start(self, with_ws: bool = True) -> None:
-        self.instrument = await self.rest.instrument()
-        if self.instrument.status and self.instrument.status != "Trading":
-            log.warning("Інструмент %s має статус %s", self.instrument.symbol, self.instrument.status)
-        log.info(
-            "Інструмент %s: tick %s, мін. обсяг %s",
-            self.instrument.symbol, self.instrument.tick_size, self.instrument.min_qty,
-        )
-        try:
-            seeded = self.ws.seed_trades(await self.rest.recent_trades())
-            log.info("Засіяно %d останніх угод з REST", seeded)
-        except BybitError as exc:
-            log.warning("Не вдалося взяти останні угоди: %s", exc)
-        if with_ws:
-            self._ws_task = asyncio.create_task(self.ws.run(), name="bybit-ws")
+    @property
+    def instrument(self) -> SymbolSpec | None:
+        return self.source.spec
+
+    @property
+    def connected(self) -> bool:
+        return self.source.connected
+
+    async def start(self) -> None:
+        """Запускає фоновий нагляд: підключення, перепідключення, повідомлення власнику."""
+        self._task = asyncio.create_task(self.source.run(), name="mt5")
+
+    async def wait_connected(self, timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while not self.connected and loop.time() < end:
+            await asyncio.sleep(0.2)
+        return self.connected
 
     async def stop(self) -> None:
-        self.ws.stop()
-        if self._ws_task:
-            self._ws_task.cancel()
+        await self.source.stop()
+        if self._task:
+            self._task.cancel()
             try:
-                await self._ws_task
+                await self._task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-        await self.rest.close()
 
-    async def fetch_raw(self, intervals: list[int] | None = None, oi: bool = True, ls: bool = True) -> RawMarket:
-        intervals = intervals or self.cfg.market.kline_intervals
-        now_ms = int(time.time() * 1000)
-        coros: dict[str, Any] = {f"kline_{i}": self.rest.klines(i, now_ms=now_ms) for i in intervals}
-        coros["ticker"] = self.rest.ticker()
-        if oi:
-            coros["oi"] = self.rest.open_interest(limit=13)
-        if ls:
-            coros["ls"] = self.rest.long_short_ratio(limit=13)
+    async def fetch_raw(self, intervals: list[int] | None = None, activity: bool = True) -> RawMarket:
+        if not self.connected:
+            raise MT5Unavailable(self.source.last_error or "немає підключення до MT5")
+        intervals = intervals or self.cfg.mt5.timeframes
+        if self.source.offset_source != "config":
+            await self.source.refresh_offset()   # зсув сервера змінюється при переході на літній/зимовий час
+        now_ms = self.source.now_ms()
+        coros: dict[str, Any] = {f"kline_{i}": self.source.klines(i, now_ms=now_ms) for i in intervals}
+        coros["tick"] = self.source.tick(now_ms)
+        if activity:
+            coros["tick_activity"] = self.source.tick_activity(now_ms)
         results = dict(zip(coros, await asyncio.gather(*coros.values(), return_exceptions=True)))
         missing = []
         for name, res in results.items():
+            if isinstance(res, MT5Unavailable):
+                raise res
             if isinstance(res, BaseException):
                 log.warning("Джерело %s недоступне: %s", name, res)
                 missing.append(name)
                 results[name] = None
         klines = {i: results[f"kline_{i}"] for i in intervals if results[f"kline_{i}"] is not None}
-        return RawMarket(now_ms, klines, results["ticker"], results.get("oi"), results.get("ls"), missing)
+        if results["tick"] is not None:
+            self.last_tick = results["tick"]
+        return RawMarket(now_ms, klines, results["tick"], results.get("tick_activity"), missing)
 
-    def price(self, raw: RawMarket | None = None) -> float | None:
-        last = self.ws.trades.last
-        if last is not None and (self.ws.seconds_since_data() or 1e9) < self.cfg.network.ws_stale_sec:
-            return last.price
-        if raw and raw.ticker and raw.ticker.get("last_price"):
-            return raw.ticker["last_price"]
-        if raw and 5 in raw.klines and not raw.klines[5].empty:
-            return float(raw.klines[5]["close"].iloc[-1])
-        return last.price if last else None
+    async def state(self) -> MarketState:
+        """Чи йдуть зараз торги: зв'язок з MT5, розклад сесії, свіжість тіків."""
+        if not self.connected:
+            return MarketState(NO_CONNECTION, self.source.last_error or "немає зв'язку з MT5")
+        now = datetime.fromtimestamp(self.source.clock(), timezone.utc)
+        reason = session_closed_reason(self.cfg.market.session, now)
+        if reason:
+            return MarketState(CLOSED, reason, self.last_tick)
+        try:
+            tick = await self.source.tick()
+        except MT5Unavailable as exc:
+            return MarketState(NO_CONNECTION, str(exc))
+        except MT5Error as exc:
+            return MarketState(CLOSED, f"немає котирувань: {exc}")
+        self.last_tick = tick
+        reason = stale_ticks_reason(tick.get("age_sec"), self.cfg.market.no_ticks_closed_sec)
+        return MarketState(CLOSED if reason else OPEN, reason, tick)
+
+    def price(self, raw: RawMarket) -> float | None:
+        """Ціна графіка — Bid (по ньому будуються свічки MT5)."""
+        if raw.tick and raw.tick.get("bid"):
+            return float(raw.tick["bid"])
+        for tf in (1, 5):
+            if tf in raw.klines and not raw.klines[tf].empty:
+                return float(raw.klines[tf]["close"].iloc[-1])
+        return None
 
 
 @dataclass
@@ -122,6 +159,11 @@ class Snapshot:
     missing: list[str]
     baseline_direction: str      # напрямок останньої закритої 5-хв свічки (для базової лінії)
     atr: float | None
+    spread_warning: str | None = None
+
+    @property
+    def cost_pct(self) -> float | None:
+        return (self.data.get("costs") or {}).get("round_trip_pct")
 
     def to_json(self) -> str:
         return json.dumps(self.data, ensure_ascii=False, separators=(",", ":"))
@@ -141,19 +183,30 @@ def build_snapshot(
     if price is None:
         raise SnapshotError("немає поточної ціни")
     missing = list(raw.missing)
-    fee = cfg.market.taker_fee_pct
+    spec = market.instrument
 
-    tf5 = ind.compute_5m(raw.klines[5], cfg.indicators, now_ms, price)
+    try:
+        tf5 = ind.compute_5m(raw.klines[5], cfg.indicators, now_ms, price)
+    except ValueError as exc:
+        raise SnapshotError(str(exc)) from exc
 
+    t = raw.tick or {}
+    spread_pct = t.get("spread_pct")
     data: dict[str, Any] = {
-        "symbol": cfg.market.symbol,
+        "symbol": cfg.mt5.symbol,
+        "instrument": "CFD на нафту WTI (MetaTrader 5, Bybit TradFi)",
         "time_utc": datetime.fromtimestamp(now_ms / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "price": price,
-        "fees": {
-            "taker_pct": fee,
-            "round_trip_pct": round(2 * fee, 4),
+        "quote": {
+            "bid": t.get("bid"),
+            "ask": t.get("ask"),
+            "spread": t.get("spread"),
+            "spread_points": t.get("spread_points"),
+            "spread_pct": spread_pct,
+            "last_tick_age_sec": t.get("age_sec"),
         },
-        "tick_size": market.instrument.tick_size if market.instrument else None,
+        "costs": costs(spread_pct, cfg.market.commission_pct),
+        "tick_size": spec.tick_size if spec else None,
         "tf_5m": tf5,
     }
 
@@ -173,61 +226,23 @@ def build_snapshot(
                 k[k["closed"]], cfg.indicators.trend_ema_fast, cfg.indicators.trend_ema_slow
             )
 
-    t = raw.ticker
-    if t:
-        next_funding = t.get("next_funding_ms")
-        data["ticker"] = {
-            "mark_price": t.get("mark_price"),
-            "index_price": t.get("index_price"),
-            "spread_pct": None if t.get("spread_pct") is None else round(t["spread_pct"], 4),
-            "funding_rate_pct": None if t.get("funding_rate") is None else round(t["funding_rate"] * 100, 4),
-            "next_funding_in_min": None if not next_funding else round((next_funding - now_ms) / 60_000),
-            "open_interest": t.get("open_interest"),
-            "price_24h_pct": round(t.get("price_24h_pct") or 0, 3),
-            "high_24h": t.get("high_24h"),
-            "low_24h": t.get("low_24h"),
-        }
+    a = raw.activity
+    if a and a.get("ticks_total"):
+        data["tick_activity"] = {k: a.get(k) for k in (
+            "ticks_1m", "ticks_5m", "ticks_15m", "base_per_min", "ratio_1m", "ratio_5m")}
+    elif "tick_activity" not in missing:
+        missing.append("tick_activity")
 
-    if raw.oi is not None and len(raw.oi) >= 2:
-        s = raw.oi["oi"]
-        data["open_interest"] = {
-            "series_5m_last_hour": [round(x, 2) for x in s.tolist()],
-            "change_15m_pct": _pct(s.iloc[-1], s.iloc[-4]) if len(s) >= 4 else None,
-            "change_1h_pct": _pct(s.iloc[-1], s.iloc[0]),
+    warn = None
+    if a and t.get("spread") is not None:
+        median = a.get("spread_median")
+        warn = spread_warning(t["spread"], median, cfg.alerts.triggers.spread_widen_mult)
+        point = spec.point if spec else None
+        data["spread_state"] = {
+            "current_points": t.get("spread_points"),
+            "median_60m_points": round(median / point, 1) if median and point else None,
+            "widened": warn is not None,
         }
-    elif "oi" not in missing:
-        missing.append("oi")
-
-    if raw.ls is not None and len(raw.ls):
-        data["long_short_accounts"] = {
-            "buy_ratio": raw.ls["buy"].iloc[-1],
-            "sell_ratio": raw.ls["sell"].iloc[-1],
-            "buy_ratio_change_1h": round(raw.ls["buy"].iloc[-1] - raw.ls["buy"].iloc[0], 4),
-        }
-
-    ws_age = market.ws.seconds_since_data(now_ms)
-    ws_fresh = ws_age is not None and ws_age < cfg.network.ws_stale_sec
-    if len(market.ws.trades):
-        data["order_flow"] = market.whales.report(now_ms).to_dict()
-        if not ws_fresh:
-            data["order_flow"]["stale"] = True
-    else:
-        missing.append("trades_ws")
-    book = market.ws.book.metrics(cfg.alerts.triggers.orderbook_band_pct) if ws_fresh else None
-    if book:
-        data["orderbook"] = {
-            "best_bid": book.best_bid,
-            "best_ask": book.best_ask,
-            "spread_pct": round(book.spread_pct, 4),
-            "band_pct": book.band_pct,
-            "bid_usdt_in_band": round(book.bid_notional),
-            "ask_usdt_in_band": round(book.ask_notional),
-            "bid_share": round(book.imbalance, 3),
-            "bid_walls": [[p, round(n)] for p, n in book.bid_walls],
-            "ask_walls": [[p, round(n)] for p, n in book.ask_walls],
-        }
-    else:
-        missing.append("orderbook_ws")
 
     if news is not None:
         if news.available:
@@ -246,6 +261,7 @@ def build_snapshot(
         missing=missing,
         baseline_direction=tf5["last_closed"]["direction"],
         atr=tf5["atr"],
+        spread_warning=warn.text if warn else None,
     )
 
 
@@ -256,7 +272,7 @@ async def collect(
     return build_snapshot(cfg, market, raw, news, calendar)
 
 
-async def _main(ws_seconds: float) -> None:
+async def _main() -> None:
     from bot.config import load_settings
     from bot.logging_setup import setup_logging
     from bot.tracking.db import Database
@@ -264,21 +280,19 @@ async def _main(ws_seconds: float) -> None:
     settings = load_settings()
     cfg = settings.config
     setup_logging(cfg, settings.secrets)
-    market = MarketService(cfg)
+    market = MarketService(cfg, secrets=settings.secrets)
     news = NewsService(cfg.news, cfg.network)
     db = Database(cfg.db_path)
     await db.connect()
     calendar = EventCalendar(cfg.calendar, await db.load_events())
     try:
         await market.start()
-        news_task = asyncio.create_task(news.poll_once())
-        log.info("Збираю дані WebSocket %.0f с…", ws_seconds)
-        await asyncio.sleep(ws_seconds)
-        await news_task
+        await news.poll_once()
+        if not await market.wait_connected(cfg.mt5.init_timeout_ms / 1000 + 5):
+            raise SystemExit(f"MT5 недоступний: {market.source.last_error}")
         snap = await collect(cfg, market, news, calendar)
         print(json.dumps(snap.data, ensure_ascii=False, indent=2))
-        print(f"\nWS: підключень {market.ws.connects}, угод у вікні {len(market.ws.trades)}, "
-              f"відсутні джерела: {snap.missing or 'немає'}")
+        print(f"\nВідсутні джерела: {snap.missing or 'немає'}")
     finally:
         await market.stop()
         await news.close()
@@ -286,8 +300,4 @@ async def _main(ws_seconds: float) -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    p = argparse.ArgumentParser(description="Надрукувати знімок ринку")
-    p.add_argument("--ws-seconds", type=float, default=15, help="скільки слухати WebSocket перед знімком")
-    asyncio.run(_main(p.parse_args().ws_seconds))
+    asyncio.run(_main())

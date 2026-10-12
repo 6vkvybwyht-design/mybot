@@ -12,7 +12,7 @@ WIN, LOSS, NEUTRAL = "win", "loss", "neutral"
 
 
 def classify(direction: str, change_pct: float, round_trip_pct: float) -> str:
-    """Вдалий — рух у передбаченому напрямку більший за подвійну комісію (вхід+вихід);
+    """Вдалий — рух у передбаченому напрямку більший за витрати на угоду (спред + комісія за вхід і вихід);
     невдалий — такий самий рух проти; інакше нейтральний."""
     favorable = change_pct if direction == "long" else -change_pct
     if favorable > round_trip_pct:
@@ -81,6 +81,9 @@ def bucket(pct: int) -> str | None:
 
 
 def compute(rows: list[dict], horizons: list[int], round_trip_pct: float) -> Stats:
+    """round_trip_pct — витрати за замовчуванням для прогнозів, у яких їх не записано
+    (у нових прогнозах — спред + комісія на момент прогнозу, колонка cost_pct)."""
+    default_rt = round_trip_pct
     main_h = max(horizons)
     st = Stats(main_horizon=main_h)
     st.horizons = {h: Tally() for h in horizons}
@@ -96,6 +99,8 @@ def compute(rows: list[dict], horizons: list[int], round_trip_pct: float) -> Sta
         action = r["action"]
         model_dir = _dir(action)
         trusted = r["source"] in ("manual", "alert")
+        rt = r.get("cost_pct")
+        round_trip_pct = default_rt if rt is None else rt
 
         for h in horizons:
             o = outs.get(h)
@@ -141,7 +146,7 @@ def export_csv(rows: list[dict], horizons: list[int]) -> bytes:
     w = csv.writer(buf)
     head = ["id", "time_utc", "source", "price", "action", "long_pct", "short_pct", "confidence", "entry",
             "stop_loss", "take_profit", "trigger_direction", "triggers", "baseline_direction", "model",
-            "prompt_version"]
+            "prompt_version", "cost_pct"]
     for h in horizons:
         head += [f"price_{h}m", f"change_{h}m_pct", f"hit_{h}m"]
     w.writerow(head)
@@ -151,7 +156,7 @@ def export_csv(rows: list[dict], horizons: list[int]) -> bytes:
             r["source"], r["price"], r["action"], r["long_pct"], r["short_pct"], r["confidence"], r["entry"],
             r["stop_loss"], r["take_profit"], r["trigger_direction"],
             json.dumps([t.get("name") for t in r.get("triggers") or []], ensure_ascii=False),
-            r["baseline_direction"], r["model"], r["prompt_version"],
+            r["baseline_direction"], r["model"], r["prompt_version"], r.get("cost_pct"),
         ]
         for h in horizons:
             o = r["outcomes"].get(h)

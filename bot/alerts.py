@@ -10,14 +10,13 @@ from datetime import datetime, timezone
 from html import escape
 
 from bot.app import App, Notify
-from bot.market.bybit_rest import BybitError
+from bot.market.hours import CLOSED
+from bot.market.mt5_source import MT5Error
+from bot.snapshot import RawMarket
 from bot.telegram.format import fmt_dt
-from bot.triggers import NAMES_UA, UP, OrderbookTracker, TriggerHit, evaluate_all, strongest_direction
+from bot.triggers import NAMES_UA, UP, TriggerHit, evaluate_all, spread_warning, strongest_direction
 
 log = logging.getLogger(__name__)
-
-OI_REFRESH_MS = 60_000
-BOOK_SAMPLE_SEC = 2.0
 
 
 class AlertManager:
@@ -26,74 +25,49 @@ class AlertManager:
         self.cfg = app.cfg
         self.notify = notify
         self.dry_run = self.cfg.alerts.dry_run if dry_run is None else dry_run
-        t = self.cfg.alerts.triggers
-        self.book = OrderbookTracker(t.orderbook_imbalance, t.orderbook_hold_sec)
         self.last_sent: tuple[str, int] | None = None      # (напрямок, час)
         self.last_filtered_ms: int | None = None
         self.model_calls: deque[int] = deque()
         self.warned_events: set[tuple[str, int]] = set()
-        self.connection_alarm = False
+        self.spread_alarm = False
+        self.market_closed = False
         self.last_hits: list[TriggerHit] = []
-        self._oi = None
-        self._oi_ms = 0
         self._stop = asyncio.Event()
-
-    # ---------- стан даних ----------
-
-    async def check_connection(self, now_ms: int) -> bool:
-        """True, якщо ринкові дані WebSocket свіжі.
-
-        Про проблему з'єднання пише лише тоді, коли сокет мовчить зовсім (немає навіть pong):
-        на тонкому ринку угод може не бути кілька хвилин, і це не збій.
-        """
-        ws = self.app.market.ws
-        started_age = (now_ms / 1000) - self.app.started_at
-        alive_age = ws.seconds_since_alive(now_ms)
-        alive_age = started_age if alive_age is None else alive_age
-        data_age = ws.seconds_since_data(now_ms)
-        data_age = started_age if data_age is None else data_age
-        net = self.cfg.network
-        if alive_age > net.ws_alarm_sec and not self.connection_alarm:
-            self.connection_alarm = True
-            log.error("WebSocket мовчить %.0f с", alive_age)
-            await self.notify(f"🔌 Немає зв'язку з Bybit уже {alive_age / 60:.0f} хв. Перепідключаюся; "
-                              "автосигнали призупинено.")
-        elif alive_age <= net.ws_stale_sec and self.connection_alarm:
-            self.connection_alarm = False
-            await self.notify("✅ З'єднання з Bybit відновлено.")
-        return data_age <= net.ws_stale_sec
-
-    def sample_book(self, now_ms: int) -> None:
-        ws = self.app.market.ws
-        fresh = (ws.seconds_since_data(now_ms) or 1e9) <= self.cfg.network.ws_stale_sec
-        metrics = ws.book.metrics(self.cfg.alerts.triggers.orderbook_band_pct) if fresh else None
-        self.book.update(metrics, now_ms)
 
     # ---------- тригери ----------
 
-    async def compute_hits(self, now_ms: int) -> list[TriggerHit]:
-        market = self.app.market
-        need_oi = now_ms - self._oi_ms >= OI_REFRESH_MS
-        raw = await market.fetch_raw([5], oi=need_oi, ls=False)
-        if need_oi and raw.oi is not None:
-            self._oi, self._oi_ms = raw.oi, now_ms
+    async def compute_hits(self, raw: RawMarket) -> list[TriggerHit]:
         if 5 not in raw.klines:
             return []
-        trades = market.ws.trades
-        price = market.price(raw)
+        price = self.app.market.price(raw)
         if price is None:
             return []
         return evaluate_all(
             self.cfg,
             k5=raw.klines[5],
-            whales=market.whales.report(now_ms) if len(trades) else None,
-            oi=self._oi,
+            activity=raw.activity,
             price_now=price,
-            price_1m_ago=trades.price_at(now_ms - 60_000),
-            price_15m_ago=trades.price_at(now_ms - 15 * 60_000),
-            book=self.book,
-            now_ms=now_ms,
+            spread=(raw.tick or {}).get("spread"),
         )
+
+    async def check_spread(self, raw: RawMarket) -> None:
+        """Розширення спреду — окреме попередження (один раз на епізод), не сигнал."""
+        spread = (raw.tick or {}).get("spread")
+        median = (raw.activity or {}).get("spread_median")
+        warn = spread_warning(spread, median, self.cfg.alerts.triggers.spread_widen_mult)
+        if warn and not self.spread_alarm:
+            self.spread_alarm = True
+            spec = self.app.market.instrument
+            point = spec.point if spec else 0.001
+            text = (f"⚠️ Спред {escape(self.cfg.mt5.symbol)} розширився: {warn.spread / point:.0f} п. "
+                    f"(×{warn.ratio:.1f} від звичайних {warn.median / point:.0f} п.). "
+                    "Угоди зараз дорожчі — це попередження, не сигнал.")
+            log.warning("Спред розширено: %s / медіана %s", warn.spread, warn.median)
+            if self.app.alerts_enabled and not self.dry_run:
+                await self.notify(text)
+        elif warn is None and spread is not None and self.spread_alarm:
+            self.spread_alarm = False
+            log.info("Спред повернувся до звичайного")
 
     # ---------- рішення ----------
 
@@ -183,36 +157,38 @@ class AlertManager:
 
     async def tick(self, now_ms: int | None = None) -> str:
         now_ms = now_ms or int(time.time() * 1000)
-        if not await self.check_connection(now_ms):
-            return "stale"
+        market = self.app.market
+        if not market.connected:
+            return "no_connection"   # про втрату зв'язку власнику пише MT5Source
+        state = await market.state()
+        if not state.is_open:
+            if state.status == CLOSED and not self.market_closed:
+                log.info("Ринок закритий (%s) — автосповіщення призупинено", state.reason)
+            self.market_closed = state.status == CLOSED
+            return "market_closed" if state.status == CLOSED else "no_connection"
+        if self.market_closed:
+            log.info("Ринок відкрився — автосповіщення відновлено")
+            self.market_closed = False
         try:
-            hits = await self.compute_hits(now_ms)
-        except BybitError as exc:
-            log.warning("Тригери: дані Bybit недоступні: %s", exc)
+            raw = await market.fetch_raw([5])
+        except MT5Error as exc:
+            log.warning("Тригери: дані MT5 недоступні: %s", exc)
             return "no_data"
-        return await self.process(hits, now_ms)
+        await self.check_spread(raw)
+        return await self.process(await self.compute_hits(raw), now_ms)
 
     # ---------- цикли ----------
 
     async def run(self) -> None:
-        book_task = asyncio.create_task(self._book_loop())
-        try:
-            while not self._stop.is_set():
-                try:
-                    await self.tick()
-                except Exception:  # noqa: BLE001
-                    log.exception("Помилка циклу автосповіщень")
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=self.cfg.alerts.loop_interval_sec)
-                except asyncio.TimeoutError:
-                    pass
-        finally:
-            book_task.cancel()
-
-    async def _book_loop(self) -> None:
-        while True:
-            self.sample_book(int(time.time() * 1000))
-            await asyncio.sleep(BOOK_SAMPLE_SEC)
+        while not self._stop.is_set():
+            try:
+                await self.tick()
+            except Exception:  # noqa: BLE001
+                log.exception("Помилка циклу автосповіщень")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self.cfg.alerts.loop_interval_sec)
+            except asyncio.TimeoutError:
+                pass
 
     def stop(self) -> None:
         self._stop.set()

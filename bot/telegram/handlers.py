@@ -12,8 +12,9 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import BufferedInputFile, Message
 
 from bot.app import App
+from bot.market.hours import NO_CONNECTION
 from bot.news.calendar import parse_event_command
-from bot.telegram.format import fmt_dt, format_stats, format_status
+from bot.telegram.format import fmt_dt, format_stats, format_status, plural_triggers
 from bot.telegram.keyboard import (
     BTN_ALERTS_OFF, BTN_ALERTS_ON, BTN_ANALYZE, BTN_STATS, BTN_STATUS, main_keyboard,
 )
@@ -41,7 +42,7 @@ def build_router(app: App) -> Router:
     @r.message(CommandStart())
     async def start(m: Message) -> None:
         await m.answer(
-            f"Привіт! Я аналізую <b>{escape(app.cfg.market.symbol)}</b> на Bybit (5 хв).\n"
+            f"Привіт! Я аналізую <b>{escape(app.cfg.mt5.symbol)}</b> (CFD на нафту WTI, MT5), таймфрейм 5 хв.\n"
             "Відсотки — оцінка моделі, а не гарантія; рішення про угоду завжди за вами.\n\n" + HELP,
             reply_markup=kb(),
         )
@@ -71,11 +72,16 @@ def build_router(app: App) -> Router:
             mins = ev.minutes_from(now)
             left = f"{mins:.0f} хв" if mins < 120 else f"{mins / 60:.1f} год"
             next_ev = f"{escape(ev.name)} — {fmt_dt(ev.at, app.tz)} (через {left})"
-        last = market.ws.trades.last
+        state = await market.state()
+        last = state.tick or market.last_tick
+        market_line = None
+        if state.status != NO_CONNECTION:
+            market_line = "🟢 відкритий" if state.is_open else f"🌙 закритий ({escape(state.reason or '')})"
         await m.answer(
             format_status(
-                symbol=app.cfg.market.symbol, price=last.price if last else None, tick=app.tick,
-                ws_connected=market.ws.connected, ws_age=market.ws.seconds_since_data(),
+                symbol=app.cfg.mt5.symbol, price=last["bid"] if last else None, tick=app.tick,
+                mt5_connected=market.connected, tick_age=last["age_sec"] if last else None,
+                mt5_error=market.source.last_error, market=market_line,
                 alerts_on=app.alerts_enabled, sensitivity=app.sensitivity, need=app.need_triggers,
                 dry_run=app.cfg.alerts.dry_run, next_event=next_ev, tz=app.tz,
                 news_ok=bool(app.news and app.news.available), predictions=await app.db.count_predictions(),
@@ -89,7 +95,8 @@ def build_router(app: App) -> Router:
     async def stats(m: Message) -> None:
         now_ms = int(time.time() * 1000)
         horizons = app.cfg.tracking.horizons_min
-        rt = 2 * app.cfg.market.taker_fee_pct
+        # Для прогнозів без записаних витрат — поточний спред + комісія.
+        rt = ((app.market.last_tick or {}).get("spread_pct") or 0.0) + 2 * app.cfg.market.commission_pct
         periods = []
         for title, days in (("7 днів", 7), ("30 днів", 30), ("Весь час", None)):
             since = now_ms - days * 86_400_000 if days else 0
@@ -135,7 +142,7 @@ def build_router(app: App) -> Router:
             )
             return
         await app.set_sensitivity(arg)
-        await m.answer(f"Чутливість: {arg} — потрібно {levels[arg]} тригери в одному напрямку.")
+        await m.answer(f"Чутливість: {arg} — потрібно {plural_triggers(levels[arg])} в одному напрямку.")
 
     @r.message(Command("event"))
     async def add_event(m: Message) -> None:
