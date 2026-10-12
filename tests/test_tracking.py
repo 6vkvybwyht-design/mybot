@@ -14,11 +14,11 @@ def pred(action="long", price=100.0, stop=99.0, take=101.0, created=T0):
     return PredictionRow(1, created, "manual", price, action, 60, 40, 100.0, stop, take, None, [], "up")
 
 
-def k1(rows, closed_upto=None):
-    """rows: [(хвилина від T0, high, low, close)]"""
+def k1(rows, closed_upto=None, spread=0):
+    """rows: [(хвилина від T0, high, low, close)]; spread — спред свічок у пунктах."""
     base = (T0 // 60_000) * 60_000
-    df = pd.DataFrame([{"start": base + m * 60_000, "open": c, "high": h, "low": low, "close": c, "volume": 1.0}
-                       for m, h, low, c in rows])
+    df = pd.DataFrame([{"start": base + m * 60_000, "open": c, "high": h, "low": low, "close": c, "volume": 1.0,
+                        "spread": spread} for m, h, low, c in rows])
     df["closed"] = True if closed_upto is None else df["start"] <= base + closed_upto * 60_000
     return df
 
@@ -42,6 +42,28 @@ def test_evaluate_short_and_wait():
     o = evaluate(pred("short", stop=101.0, take=99.0), 5, k1(rows))
     assert o.hit == "take" and o.change_pct == pytest.approx(-1.0)
     assert evaluate(pred("wait", stop=None, take=None), 5, k1(rows)).hit is None
+
+
+def test_short_checked_at_ask():
+    # Bid торкнувся тейку 99.0, але Ask = Bid + 30 п. (0.03) — шорт по тейку не закрився б.
+    rows = [(m, 100.0, 99.0, 99.5) for m in range(6)]
+    short = pred("short", stop=101.0, take=99.0)
+    assert evaluate(short, 5, k1(rows, spread=30)).hit == "take"            # без point — як раніше, по Bid
+    assert evaluate(short, 5, k1(rows, spread=30), point=0.001).hit is None
+    # І стоп шорту спрацьовує раніше: high 100.98 + 0.03 >= 101.0
+    rows = [(m, 100.98, 99.9, 100.0) for m in range(6)]
+    assert evaluate(short, 5, k1(rows, spread=30), point=0.001).hit == "stop"
+    # Лонг закривається по Bid — спред на нього не впливає.
+    rows = [(m, 101.0, 99.9, 100.5) for m in range(6)]
+    assert evaluate(pred(), 5, k1(rows, spread=30), point=0.001).hit == "take"
+
+
+def test_horizon_inside_trading_break():
+    # Торги до хвилини 3, перерва, відкриття на хвилині 70: ціна горизонту — останнє закриття перед перервою.
+    rows = [(m, 100.1, 99.9, 100.0 + m * 0.1) for m in range(4)]
+    assert evaluate(pred(), 5, k1(rows)) is None                           # торги ще не відновилися
+    o = evaluate(pred(), 5, k1(rows + [(70, 102, 101, 101.5)]))
+    assert o is not None and o.price == pytest.approx(100.3) and o.hit is None
 
 
 def test_evaluate_waits_for_closed_candle():
@@ -68,6 +90,11 @@ async def test_checker_writes_three_horizons(tmp_path):
     assert set(rows[pid]["outcomes"]) == {5, 10, 15}
     assert set(rows[young]["outcomes"]) == {5}
     assert await checker.check_once(now) == 0   # повторно не пише
+    assert "copy_rates_range" in fake.calls     # ціни для перевірки — з MT5
+    market.source.connected = False
+    await db.insert_prediction(created_ms=now - 30 * 60_000, source="manual", price=61.0,
+                               response={"action": "wait"}, snapshot={})
+    assert await checker.check_once(now) == 0   # без зв'язку з MT5 — тихо пропускаємо
     await db.close()
 
 
