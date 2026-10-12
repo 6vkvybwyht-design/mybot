@@ -344,12 +344,13 @@ class MT5Source:
         now_ms = now_ms if now_ms is not None else self.now_ms()
         bid, ask = float(t.bid), float(t.ask)
         point = self.spec.point if self.spec else 0.0
-        spread = ask - bid if bid > 0 and ask > 0 else None
+        nd = self.spec.digits + 1 if self.spec else 6   # прибирає хвости float: 0.0259999… -> 0.026
+        spread = round(ask - bid, nd) if bid > 0 and ask > 0 else None
         ts = int(t.time_msc) - self.offset * 1000
         return {
             "bid": bid,
             "ask": ask,
-            "mid": (bid + ask) / 2 if spread is not None else None,
+            "mid": round((bid + ask) / 2, nd) if spread is not None else None,
             "spread": spread,
             "spread_points": round(spread / point, 1) if spread is not None and point else None,
             "spread_pct": round(spread / bid * 100, 4) if spread is not None else None,
