@@ -151,9 +151,9 @@ async def test_run_reconnects_and_notifies_once():
         task.cancel()
 
 
-async def test_without_package_clear_error():
-    src = MT5Source(CFG.mt5, CREDS, mt5_module=None)
-    src.mt5 = None
+async def test_without_package_clear_error(monkeypatch):
+    monkeypatch.setattr("bot.market.mt5_source._load_mt5", lambda: None)   # як на Linux/macOS
+    src = MT5Source(CFG.mt5, CREDS)
     with pytest.raises(MT5Unavailable, match="MetaTrader5"):
         await src.connect()
 

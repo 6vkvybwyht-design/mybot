@@ -44,6 +44,14 @@ def mt5_market(fake=None, cfg=CFG_24_7):
     return MarketService(cfg, source=src), fake
 
 
+@pytest.fixture(autouse=True)
+def _no_real_mt5(monkeypatch):
+    """Тести ніколи не чіпають справжній термінал, навіть на Windows зі встановленим MetaTrader5."""
+    def forbidden():
+        raise AssertionError("тест намагався завантажити справжній MetaTrader5 — передайте FakeMT5")
+    monkeypatch.setattr("bot.market.mt5_source._load_mt5", forbidden)
+
+
 @pytest.fixture
 async def app(tmp_path):
     market, fake = mt5_market()
