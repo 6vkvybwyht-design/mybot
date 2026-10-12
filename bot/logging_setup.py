@@ -42,7 +42,7 @@ def setup_logging(config: AppConfig, secrets: Secrets) -> None:
 
     known = [
         s.get_secret_value()
-        for s in (secrets.telegram_bot_token, secrets.anthropic_api_key)
+        for s in (secrets.telegram_bot_token, secrets.anthropic_api_key, secrets.mt5_password)
         if s is not None
     ]
     redact = RedactSecretsFilter(known)

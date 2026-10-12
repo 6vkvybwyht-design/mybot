@@ -13,6 +13,21 @@ market:
   kline_limit: 200                  # скільки свічок тягнути на кожен таймфрейм
   trades_window_hours: 24           # ковзне вікно угод у пам'яті
 
+# MetaTrader 5 (Bybit TradFi, брокер Infra Capital Limited). Логін/пароль/сервер — у .env.
+mt5:
+  symbol: USOUSD.s                  # CFD на нафту WTI
+  symbol_search: "*USO*"            # маска для перевірки символу при старті
+  timeframes: [1, 5, 15, 60]        # хвилини: M1, M5, M15, H1
+  bars: 200                         # скільки свічок тягнути на кожен таймфрейм
+  # Зсув часу сервера MT5 від UTC у годинах. auto — за свіжим тіком
+  # (коли ринок закритий, визначити неможливо — тоді краще вказати число).
+  server_utc_offset_hours: auto
+  tick_window_min: 60               # вікно для тікової активності
+  tick_max_count: 200000
+  init_timeout_ms: 60000            # очікування запуску/відповіді терміналу
+  health_check_sec: 15              # як часто перевіряти зв'язок з терміналом
+  reconnect_max_sec: 300            # макс. пауза між спробами перепідключення
+
 network:
   timeout_sec: 10
   retries: 3

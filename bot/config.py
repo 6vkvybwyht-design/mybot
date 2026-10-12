@@ -43,6 +43,33 @@ class MarketConfig(_Model):
     trades_window_hours: int = Field(ge=1, le=72)
 
 
+MT5_TIMEFRAMES = (1, 5, 15, 60)
+
+
+class MT5Config(_Model):
+    symbol: str
+    symbol_search: str = "*USO*"
+    timeframes: list[int] = list(MT5_TIMEFRAMES)
+    bars: int = Field(ge=50, le=5000, default=200)
+    # Час сервера MT5 зазвичай не UTC. auto — визначити за свіжим тіком; або число годин, напр. 3
+    server_utc_offset_hours: float | Literal["auto"] = "auto"
+    tick_window_min: int = Field(ge=10, le=24 * 60, default=60)
+    tick_max_count: int = Field(gt=0, default=200_000)
+    init_timeout_ms: int = Field(gt=0, default=60_000)
+    health_check_sec: int = Field(ge=1, default=15)
+    reconnect_max_sec: int = Field(ge=1, default=300)
+
+    @field_validator("timeframes")
+    @classmethod
+    def _tf(cls, v: list[int]) -> list[int]:
+        bad = [x for x in v if x not in MT5_TIMEFRAMES]
+        if bad:
+            raise ValueError(f"непідтримувані таймфрейми {bad}, можна: {list(MT5_TIMEFRAMES)}")
+        if 5 not in v:
+            raise ValueError("таймфрейм 5 обов'язковий — на ньому рахуються індикатори")
+        return v
+
+
 class NetworkConfig(_Model):
     timeout_sec: float = Field(gt=0)
     retries: int = Field(ge=0, le=10)
@@ -199,6 +226,7 @@ class CalendarConfig(_Model):
 
 class AppConfig(_Model):
     market: MarketConfig
+    mt5: MT5Config
     network: NetworkConfig
     whales: WhalesConfig
     indicators: IndicatorsConfig
@@ -235,6 +263,10 @@ class Secrets(BaseModel):
     telegram_owner_id: int | None
     anthropic_api_key: SecretStr | None
     anthropic_model: str | None
+    mt5_login: int | None = None
+    mt5_password: SecretStr | None = None
+    mt5_server: str | None = None
+    mt5_path: str | None = None
 
     def missing(self) -> list[str]:
         names = {
@@ -272,11 +304,19 @@ def load_secrets(env_file: Path | None = None) -> Secrets:
         raise ConfigError("TELEGRAM_OWNER_ID має бути числом")
     token = _env("TELEGRAM_BOT_TOKEN")
     key = _env("ANTHROPIC_API_KEY")
+    mt5_login = _env("MT5_LOGIN")
+    if mt5_login is not None and not mt5_login.isdigit():
+        raise ConfigError("MT5_LOGIN має бути числом (номер рахунку MT5)")
+    mt5_password = _env("MT5_PASSWORD")
     return Secrets(
         telegram_bot_token=SecretStr(token) if token else None,
         telegram_owner_id=int(owner) if owner else None,
         anthropic_api_key=SecretStr(key) if key else None,
         anthropic_model=_env("ANTHROPIC_MODEL"),
+        mt5_login=int(mt5_login) if mt5_login else None,
+        mt5_password=SecretStr(mt5_password) if mt5_password else None,
+        mt5_server=_env("MT5_SERVER"),
+        mt5_path=_env("MT5_PATH"),
     )
 
 
