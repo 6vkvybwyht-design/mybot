@@ -116,6 +116,15 @@ async def test_ipc_failure_marks_disconnected():
         await src.snapshot()
 
 
+async def _until(cond, timeout=5.0):
+    """Чекати умову опитуванням, а не фіксованим sleep — під навантаженням потоки повільніші."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while not cond():
+        assert loop.time() < end, "умова не виконалась вчасно"
+        await asyncio.sleep(0.01)
+
+
 async def test_run_reconnects_and_notifies_once():
     sent = []
 
@@ -126,22 +135,20 @@ async def test_run_reconnects_and_notifies_once():
     fake.down = True
     src, _ = make(fake, notify=notify)
     task = asyncio.create_task(src.run())
-    await asyncio.sleep(0.05)
-    assert not src.connected and len(sent) == 1 and "MT5" in sent[0]
-    fake.down = False
-    src._stop.set(); src._stop.clear()   # розбудити паузу перепідключення
-    for _ in range(100):
-        if src.connected:
-            break
-        await asyncio.sleep(0.01)
-    await asyncio.sleep(0.05)
-    assert src.connected and len(sent) == 2 and sent[1].startswith("✅")
-    # Обрив під час роботи: health-check бачить, що термінал закрито.
-    fake.down = True
-    await asyncio.sleep(1.2)
-    assert not src.connected and len(sent) == 3
-    await src.stop()
-    task.cancel()
+    try:
+        await _until(lambda: len(sent) == 1)
+        assert not src.connected and "MT5" in sent[0]
+        fake.down = False
+        src._stop.set(); src._stop.clear()   # розбудити паузу перепідключення
+        await _until(lambda: len(sent) == 2)
+        assert src.connected and sent[1].startswith("✅")
+        # Обрив під час роботи: health-check бачить, що термінал закрито, і пише один раз.
+        fake.down = True
+        await _until(lambda: len(sent) == 3)
+        assert not src.connected and sent[2].startswith("⚠️")
+    finally:
+        await src.stop()
+        task.cancel()
 
 
 async def test_without_package_clear_error():
