@@ -50,6 +50,8 @@ class SessionConfig(_Model):
 
 
 class MarketConfig(_Model):
+    # Комісія брокера за одну сторону угоди, % (0 — якщо брокер бере лише спред)
+    commission_pct: float = Field(ge=0, lt=1, default=0.0)
     # Нових тіків немає довше — вважаємо ринок закритим (на відкритому ринку ~30 тіків за хвилину)
     no_ticks_closed_sec: int = Field(ge=10)
     session: SessionConfig

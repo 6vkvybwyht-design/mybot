@@ -79,8 +79,9 @@ def _num(v: Any) -> float | None:
     raise ValueError
 
 
-def validate(data: dict[str, Any], price: float, fee_pct: float, spread_pct: float | None) -> tuple[dict, list[str]]:
-    """Перевіряє відповідь моделі. Повертає (нормалізовані дані, список помилок)."""
+def validate(data: dict[str, Any], price: float, cost_pct: float) -> tuple[dict, list[str]]:
+    """Перевіряє відповідь моделі. cost_pct — витрати «вхід+вихід» (спред + комісія), %.
+    Повертає (нормалізовані дані, список помилок)."""
     errors: list[str] = []
     out = dict(data)
 
@@ -132,11 +133,10 @@ def validate(data: dict[str, Any], price: float, fee_pct: float, spread_pct: flo
                 errors.append(f"для шорту потрібно take < entry < stop (зараз {take} / {entry} / {stop})")
             if abs(entry - price) / price * 100 > MAX_ENTRY_DEVIATION_PCT:
                 errors.append(f"entry {entry} надто далеко від поточної ціни {price}")
-            min_move = 2 * fee_pct + (spread_pct or 0)
             move = abs(take - entry) / entry * 100
-            if move <= min_move:
+            if move <= cost_pct:
                 errors.append(
-                    f"відстань до тейку {move:.3f}% не перекриває комісію і спред ({min_move:.3f}%)"
+                    f"відстань до тейку {move:.3f}% не перекриває витрати — спред і комісію ({cost_pct:.3f}%)"
                 )
     return out, errors
 
@@ -172,6 +172,14 @@ class Analyzer:
         text = self.cfg.prompt_path.read_text(encoding="utf-8").replace("{symbol}", self.cfg.mt5.symbol)
         version = hashlib.sha256(text.encode()).hexdigest()[:8]
         return text, version
+
+    def cost_pct(self, snapshot: dict[str, Any]) -> float:
+        """Витрати зі знімка; якщо їх немає — спред з котирування + комісія з конфігу."""
+        rt = (snapshot.get("costs") or {}).get("round_trip_pct")
+        if rt is not None:
+            return float(rt)
+        spread = (snapshot.get("quote") or {}).get("spread_pct") or 0.0
+        return float(spread) + 2 * self.cfg.market.commission_pct
 
     async def _call(self, system: str, messages: list[dict]) -> str:
         kwargs: dict[str, Any] = {
@@ -217,7 +225,7 @@ class Analyzer:
             f"{json.dumps(snapshot, ensure_ascii=False, separators=(',', ':'))}"
         )
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
-        spread = (snapshot.get("quote") or {}).get("spread_pct")
+        cost = self.cost_pct(snapshot)
         started = time.monotonic()
         errors: list[str] = []
         for attempt in (1, 2):
@@ -227,7 +235,7 @@ class Analyzer:
             except ValueError as exc:
                 errors = [f"невалідний JSON: {exc}"]
             else:
-                data, errors = validate(data, price, 0.0, spread)
+                data, errors = validate(data, price, cost)
                 if not errors:
                     return AnalysisResult(data, self.model, version, attempt, time.monotonic() - started)
             log.warning("Спроба %d: відповідь моделі невалідна: %s", attempt, "; ".join(errors))

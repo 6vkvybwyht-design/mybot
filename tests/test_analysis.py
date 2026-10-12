@@ -8,7 +8,7 @@ from bot.analysis import RESPONSE_SCHEMA, AnalysisError, Analyzer, parse_json, v
 from bot.config import Secrets
 from tests.helpers import CFG
 
-FEE = 0.055
+COST = 0.03   # спред 0.028% (26 п. при ціні 93.7) + комісія 0
 GOOD_LONG = {
     "action": "long", "long_pct": 64, "short_pct": 36, "confidence": "medium",
     "summary": "Покупці домінують.", "reasons": ["a", "b", "c", "d", "e"],
@@ -26,7 +26,7 @@ def test_parse_json_variants():
 
 
 def test_valid_long_and_truncates_reasons():
-    out, errors = validate(GOOD_LONG, 61.42, FEE, 0.02)
+    out, errors = validate(GOOD_LONG, 61.42, COST)
     assert errors == []
     assert len(out["reasons"]) == 4
 
@@ -34,12 +34,12 @@ def test_valid_long_and_truncates_reasons():
 def test_valid_short():
     d = {**GOOD_LONG, "action": "short", "long_pct": 30, "short_pct": 70,
          "entry": 61.40, "stop_loss": 61.60, "take_profit": 61.00}
-    assert validate(d, 61.4, FEE, 0.02)[1] == []
+    assert validate(d, 61.4, COST)[1] == []
 
 
 def test_wait_clears_levels():
     d = {**GOOD_LONG, "action": "wait", "long_pct": 50, "short_pct": 50}
-    out, errors = validate(d, 61.4, FEE, None)
+    out, errors = validate(d, 61.4, COST)
     assert errors == [] and out["entry"] is None and out["take_profit"] is None
 
 
@@ -50,7 +50,7 @@ def test_wait_clears_levels():
         ({"long_pct": 40, "short_pct": 60}, "long_pct не більший"),
         ({"long_pct": "64"}, "цілими"),
         ({"stop_loss": 61.5}, "stop < entry < take"),
-        ({"take_profit": 61.43}, "не перекриває комісію"),
+        ({"take_profit": 61.43}, "не перекриває витрати"),
         ({"entry": 70.0, "take_profit": 71.0}, "надто далеко"),
         ({"take_profit": None}, "потрібні entry"),
         ({"action": "buy"}, "action"),
@@ -60,21 +60,28 @@ def test_wait_clears_levels():
     ],
 )
 def test_invalid_cases(patch, fragment):
-    _, errors = validate({**GOOD_LONG, **patch}, 61.42, FEE, 0.02)
+    _, errors = validate({**GOOD_LONG, **patch}, 61.42, COST)
     assert any(fragment in e for e in errors), errors
 
 
 def test_short_level_order():
     d = {**GOOD_LONG, "action": "short", "long_pct": 30, "short_pct": 70}
-    _, errors = validate(d, 61.42, FEE, 0.02)
+    _, errors = validate(d, 61.42, COST)
     assert any("take < entry < stop" in e for e in errors)
 
 
-def test_fee_threshold_includes_spread():
-    # 0.2% рух: проходить при спреді 0.02%, не проходить при спреді 0.1%
+def test_take_must_cover_costs():
+    # 0.2% рух: проходить при витратах 0.03%, не проходить при широкому спреді + комісії (0.25%)
     d = {**GOOD_LONG, "entry": 100.0, "stop_loss": 99.8, "take_profit": 100.2}
-    assert validate(d, 100.0, FEE, 0.02)[1] == []
-    assert validate(d, 100.0, FEE, 0.1)[1] != []
+    assert validate(d, 100.0, COST)[1] == []
+    assert validate(d, 100.0, 0.25)[1] != []
+
+
+def test_cost_from_snapshot_or_quote():
+    a = _analyzer(FakeMessages([]))
+    assert a.cost_pct({"costs": {"round_trip_pct": 0.05}}) == 0.05
+    assert a.cost_pct({"quote": {"spread_pct": 0.028}}) == pytest.approx(0.028 + 2 * CFG.market.commission_pct)
+    assert a.cost_pct({}) == 2 * CFG.market.commission_pct
 
 
 def test_schema_is_strict():
@@ -111,7 +118,8 @@ def _analyzer(msgs, model="claude-opus-5-5", **cfg_update):
     return Analyzer(cfg, secrets, client)
 
 
-SNAP = {"time_utc": "2026-10-12 14:32:10", "price": 61.42, "quote": {"spread_pct": 0.02}}
+SNAP = {"time_utc": "2026-10-12 14:32:10", "price": 61.42, "quote": {"spread_pct": 0.02},
+        "costs": {"spread_pct": 0.02, "commission_pct_per_side": 0.0, "round_trip_pct": 0.02}}
 
 
 async def test_analyze_success_and_request_shape():
@@ -140,6 +148,15 @@ async def test_retry_once_with_errors_then_ok():
     assert res.attempts == 2
     second = msgs.calls[1]["messages"]
     assert second[1]["role"] == "assistant" and "100" in second[2]["content"]
+
+
+async def test_wide_spread_rejects_close_take():
+    # Тейк 0.1% від входу: при звичайному спреді ок, при розширеному (0.3%) модель має переробити.
+    near = {**GOOD_LONG, "entry": 61.42, "stop_loss": 61.30, "take_profit": 61.48}
+    msgs = FakeMessages([json.dumps(near), json.dumps(GOOD_LONG)])
+    wide = {**SNAP, "costs": {**SNAP["costs"], "round_trip_pct": 0.3}}
+    res = await _analyzer(msgs).analyze(wide, 61.42)
+    assert res.attempts == 2 and "витрати" in msgs.calls[1]["messages"][2]["content"]
 
 
 async def test_two_invalid_answers_raise():

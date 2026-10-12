@@ -156,6 +156,7 @@ class App:
             baseline_direction=snapshot.baseline_direction,
             prompt_version=result.prompt_version,
             model=result.model,
+            cost_pct=snapshot.cost_pct,
         )
 
     def render(self, outcome: AnalysisOutcome, kind: str = "manual", trigger_names: list[str] | None = None) -> str:

@@ -95,7 +95,8 @@ def build_router(app: App) -> Router:
     async def stats(m: Message) -> None:
         now_ms = int(time.time() * 1000)
         horizons = app.cfg.tracking.horizons_min
-        rt = (app.market.last_tick or {}).get("spread_pct") or 0.0
+        # Для прогнозів без записаних витрат — поточний спред + комісія.
+        rt = ((app.market.last_tick or {}).get("spread_pct") or 0.0) + 2 * app.cfg.market.commission_pct
         periods = []
         for title, days in (("7 днів", 7), ("30 днів", 30), ("Весь час", None)):
             since = now_ms - days * 86_400_000 if days else 0

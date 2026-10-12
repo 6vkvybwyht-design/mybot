@@ -158,7 +158,8 @@ def _tally(t: Tally) -> str:
 def format_stats(periods: list[tuple[str, Stats]], round_trip_pct: float) -> str:
     from bot.triggers import NAMES_UA
 
-    parts = [f"<b>Статистика</b> (вдалий = рух у прогнозованому напрямку &gt; {round_trip_pct:.2f}%)"]
+    parts = [f"<b>Статистика</b> (вдалий = рух у прогнозованому напрямку більший за витрати на угоду: "
+             f"спред + комісія на момент прогнозу, зараз ≈{round_trip_pct:.3f}%)"]
     for title, st in periods:
         h = st.main_horizon
         src = st.by_source_count

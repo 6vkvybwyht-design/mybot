@@ -37,6 +37,16 @@ async def test_full_snapshot():
     assert len(snap.to_json()) < 8_000
 
 
+async def test_costs_include_commission():
+    cfg = CFG.model_copy(update={"market": CFG.market.model_copy(update={"commission_pct": 0.01})})
+    market, _ = mt5_market(cfg=cfg)
+    await market.source.connect()
+    snap = await collect(cfg, market)
+    c = snap.data["costs"]
+    assert c["commission_pct_per_side"] == 0.01
+    assert snap.cost_pct == pytest.approx(c["spread_pct"] + 0.02, abs=1e-4)
+
+
 async def test_spread_widening_flagged():
     fake = FakeMT5()
     market, _ = await _connected(fake)

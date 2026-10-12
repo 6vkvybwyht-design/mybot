@@ -35,6 +35,12 @@ def _pct(new: float | None, old: float | None) -> float | None:
     return round((new - old) / old * 100, 3)
 
 
+def costs(spread_pct: float | None, commission_pct: float) -> dict[str, Any]:
+    """Витрати на угоду «вхід + вихід» у %: спред платиться один раз, комісія — двічі."""
+    round_trip = None if spread_pct is None else round(spread_pct + 2 * commission_pct, 4)
+    return {"spread_pct": spread_pct, "commission_pct_per_side": commission_pct, "round_trip_pct": round_trip}
+
+
 @dataclass
 class RawMarket:
     """Сирі дані з MT5 за один прохід. Відсутні джерела — None."""
@@ -155,6 +161,10 @@ class Snapshot:
     atr: float | None
     spread_warning: str | None = None
 
+    @property
+    def cost_pct(self) -> float | None:
+        return (self.data.get("costs") or {}).get("round_trip_pct")
+
     def to_json(self) -> str:
         return json.dumps(self.data, ensure_ascii=False, separators=(",", ":"))
 
@@ -195,10 +205,7 @@ def build_snapshot(
             "spread_pct": spread_pct,
             "last_tick_age_sec": t.get("age_sec"),
         },
-        "costs": {
-            "spread_pct": spread_pct,
-            "round_trip_pct": spread_pct,
-        },
+        "costs": costs(spread_pct, cfg.market.commission_pct),
         "tick_size": spec.tick_size if spec else None,
         "tf_5m": tf5,
     }
