@@ -28,6 +28,7 @@ class FakeMT5:
         self.symbols = list(symbols)
         self.rng = np.random.default_rng(seed)
         self.spread = spread
+        self.history_spread: float | None = None   # спред у історії тіків, якщо відрізняється від поточного
         self.tick_age_sec = tick_age_sec
         self.ticks_per_min = ticks_per_min
         self.burst_last_min = burst_last_min
@@ -144,6 +145,7 @@ class FakeMT5:
             times += list(np.linspace(end - 59, end, self.burst_last_min))
         times = sorted(times)[:count]
         out = np.zeros(len(times), dtype=TICKS_DTYPE)
+        spread = self.spread if self.history_spread is None else self.history_spread
         for n, t in enumerate(times):
-            out[n] = (int(t), self.base, self.base + self.spread, 0, 0, int(t * 1000), 6, 0)
+            out[n] = (int(t), self.base, self.base + spread, 0, 0, int(t * 1000), 6, 0)
         return out

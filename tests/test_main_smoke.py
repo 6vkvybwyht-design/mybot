@@ -1,4 +1,4 @@
-"""Наскрізний запуск bot.main.run: фейкові Telegram API, Bybit і модель; зупинка через SIGTERM."""
+"""Наскрізний запуск bot.main.run: фейкові Telegram API, MetaTrader5 і модель; зупинка через SIGTERM."""
 
 import asyncio
 import os
@@ -17,10 +17,9 @@ import bot.analysis
 import bot.snapshot
 from bot.config import Secrets, Settings
 from bot.main import run
-from bot.market.bybit_ws import BybitWS
 from bot.telegram.keyboard import BTN_ANALYZE
 from tests.conftest import FakeModel
-from tests.fake_bybit import FakeBybit, rest_client
+from tests.fake_mt5 import FakeMT5
 from tests.helpers import CFG
 
 OWNER = 777
@@ -30,6 +29,7 @@ class FakeTelegram(BaseSession):
     def __init__(self):
         super().__init__()
         self.sent: list = []
+        self.polled = False
         self.updates = [
             Update(update_id=1, message=Message(message_id=1, date=datetime.now(timezone.utc),
                    chat=Chat(id=OWNER, type="private"), from_user=User(id=OWNER, is_bot=False, first_name="O"),
@@ -43,6 +43,9 @@ class FakeTelegram(BaseSession):
         if isinstance(method, GetMe):
             return User(id=1, is_bot=True, first_name="B", username="test_bot")
         if isinstance(method, GetUpdates):
+            if not self.polled:
+                self.polled = True
+                await asyncio.sleep(0.5)   # як у житті: кнопку натискають, коли бот уже підключився до MT5
             ups = [u for u in self.updates if u.update_id >= (method.offset or 0)]
             if not ups:
                 await asyncio.sleep(0.2)
@@ -65,11 +68,10 @@ async def test_full_run(tmp_path, monkeypatch):
     real_bot = aiogram.Bot
     monkeypatch.setattr(aiogram, "Bot", lambda token, **kw: real_bot(token, session=tg, **kw))
 
-    fake = FakeBybit()
-    real_ms = bot.snapshot.MarketService
-    monkeypatch.setattr(bot.snapshot, "MarketService", lambda cfg: real_ms(
-        cfg, rest=rest_client(fake, cfg),
-        ws=BybitWS(cfg.market.model_copy(update={"ws_public_url": "ws://127.0.0.1:9"}), cfg.network)))
+    fake = FakeMT5()
+    real_src = bot.snapshot.MT5Source
+    monkeypatch.setattr(bot.snapshot, "MT5Source", lambda cfg, creds, **kw: real_src(
+        cfg, creds, mt5_module=fake, clock=lambda: fake.now, **kw))
     model = FakeModel()
     monkeypatch.setattr(bot.analysis.anthropic, "AsyncAnthropic",
                         lambda **kw: SimpleNamespace(beta=SimpleNamespace(messages=model)))

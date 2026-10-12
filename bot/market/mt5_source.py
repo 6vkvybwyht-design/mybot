@@ -135,6 +135,12 @@ def tick_activity(ticks: Any, offset_sec: int, now_ms: int, window_min: int, poi
     base_n = int((ts <= now_ms - 5 * 60_000).sum())
     per_min = base_n / base_min if base_min > 0 else None
     n1, n5, n15 = count(1), count(5), count(15)
+
+    def bid_at(ms: int) -> float | None:
+        """Bid останнього тіка не пізніше ms (ціна «N хв тому»)."""
+        idx = np.nonzero((ts <= ms) & (bid > 0))[0]
+        return float(bid[idx[-1]]) if len(idx) else None
+
     valid = (bid > 0) & (ask > 0)
     spreads = (ask - bid)[valid]
     out.update(
@@ -148,6 +154,9 @@ def tick_activity(ticks: Any, offset_sec: int, now_ms: int, window_min: int, poi
             "ratio_5m": round(n5 / 5 / per_min, 2) if per_min else None,
             "spread_median_points": round(float(np.median(spreads)) / point, 1) if len(spreads) and point else None,
             "spread_max_points": round(float(spreads.max()) / point, 1) if len(spreads) and point else None,
+            "spread_median": float(np.median(spreads)) if len(spreads) else None,
+            "price_1m_ago": bid_at(now_ms - 60_000),
+            "price_5m_ago": bid_at(now_ms - 5 * 60_000),
             "last_tick_age_sec": round((now_ms - int(ts.max())) / 1000, 1),
         }
     )
@@ -172,7 +181,7 @@ class MT5Source:
         self.connected = False
         self.spec: SymbolSpec | None = None
         self.server_offset_sec: int | None = None
-        self.offset_source = "unknown"   # config | tick | unknown
+        self.offset_source = "unknown"   # config | tick | fallback
         self.last_error: str | None = None
         self.connects = 0
         self._lock = asyncio.Lock()
@@ -308,9 +317,10 @@ class MT5Source:
                 log.info("MT5: час сервера = UTC%+.1f год (визначено за тіком)", off / 3600)
             self.server_offset_sec, self.offset_source = off, "tick"
         elif self.server_offset_sec is None:
+            fb = self.cfg.server_utc_offset_fallback_hours
             log.warning("MT5: не вдалося визначити зсув часу сервера (останній тік старий — ринок закритий?). "
-                        "Беру 0; задайте mt5.server_utc_offset_hours у config.yaml.")
-            self.server_offset_sec, self.offset_source = 0, "unknown"
+                        "Поки беру UTC%+.1f (server_utc_offset_fallback_hours); уточню за першим свіжим тіком.", fb)
+            self.server_offset_sec, self.offset_source = int(fb * 3600), "fallback"
         return self.offset
 
     # --- дані ---

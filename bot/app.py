@@ -10,6 +10,7 @@ from typing import Awaitable, Callable
 
 from bot.analysis import AnalysisError, AnalysisResult, Analyzer
 from bot.config import AppConfig
+from bot.market.mt5_source import MT5Error, MT5Unavailable
 from bot.news.calendar import Event, EventCalendar
 from bot.news.rss import NewsService
 from bot.snapshot import MarketService, Snapshot, SnapshotError, collect
@@ -102,6 +103,11 @@ class App:
             snapshot = snapshot or await self.make_snapshot()
         except SnapshotError as exc:
             return AnalysisOutcome(None, None, f"Не вдалося зібрати дані: {exc}")
+        except MT5Unavailable as exc:
+            return AnalysisOutcome(None, None, f"Немає зв'язку з MT5: {exc}")
+        except MT5Error as exc:
+            log.warning("Дані MT5: %s", exc)
+            return AnalysisOutcome(None, None, f"Не вдалося отримати дані MT5: {exc}")
         except Exception as exc:  # noqa: BLE001
             log.exception("Помилка збору знімка")
             return AnalysisOutcome(None, None, f"Не вдалося зібрати дані: {exc}")
@@ -111,6 +117,8 @@ class App:
             log.warning("Аналіз не вдався: %s", exc)
             return AnalysisOutcome(snapshot, None, f"Помилка аналізу: {exc}")
         self._ensure_event_flag(snapshot, result)
+        if snapshot.spread_warning and not any("спред" in f.lower() for f in result.data["risk_flags"]):
+            result.data["risk_flags"].append(snapshot.spread_warning)
         pred_id = None
         if save:
             pred_id = await self.save(source, snapshot, result, triggers, trigger_direction)
@@ -145,7 +153,7 @@ class App:
         )
 
     def render(self, outcome: AnalysisOutcome, kind: str = "manual", trigger_names: list[str] | None = None) -> str:
-        symbol = self.cfg.market.symbol
+        symbol = self.cfg.mt5.symbol
         if outcome.result is None or outcome.snapshot is None:
             snap = outcome.snapshot
             return format_failure(

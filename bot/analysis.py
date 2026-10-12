@@ -169,7 +169,7 @@ class Analyzer:
 
     def load_prompt(self) -> tuple[str, str]:
         """Промпт читається з файлу щоразу — його можна правити без перезапуску."""
-        text = self.cfg.prompt_path.read_text(encoding="utf-8").replace("{symbol}", self.cfg.market.symbol)
+        text = self.cfg.prompt_path.read_text(encoding="utf-8").replace("{symbol}", self.cfg.mt5.symbol)
         version = hashlib.sha256(text.encode()).hexdigest()[:8]
         return text, version
 
@@ -217,7 +217,7 @@ class Analyzer:
             f"{json.dumps(snapshot, ensure_ascii=False, separators=(',', ':'))}"
         )
         messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
-        spread = (snapshot.get("ticker") or {}).get("spread_pct")
+        spread = (snapshot.get("quote") or {}).get("spread_pct")
         started = time.monotonic()
         errors: list[str] = []
         for attempt in (1, 2):
@@ -227,7 +227,7 @@ class Analyzer:
             except ValueError as exc:
                 errors = [f"невалідний JSON: {exc}"]
             else:
-                data, errors = validate(data, price, self.cfg.market.taker_fee_pct, spread)
+                data, errors = validate(data, price, 0.0, spread)
                 if not errors:
                     return AnalysisResult(data, self.model, version, attempt, time.monotonic() - started)
             log.warning("Спроба %d: відповідь моделі невалідна: %s", attempt, "; ".join(errors))
@@ -258,11 +258,13 @@ async def _main(snapshot_file: str | None) -> None:
             snap_data = json.load(f)
         price = float(snap_data["price"])
     else:
-        market = MarketService(cfg)
+        market = MarketService(cfg, secrets=settings.secrets)
         news = NewsService(cfg.news, cfg.network)
         try:
             await market.start()
-            await asyncio.gather(news.poll_once(), asyncio.sleep(15))
+            await news.poll_once()
+            if not await market.wait_connected(cfg.mt5.init_timeout_ms / 1000 + 5):
+                raise SystemExit(f"MT5 недоступний: {market.source.last_error}")
             snap = await collect(cfg, market, news, EventCalendar(cfg.calendar))
         finally:
             await market.stop()
@@ -278,5 +280,5 @@ if __name__ == "__main__":
     import argparse
 
     p = argparse.ArgumentParser(description="Отримати аналіз моделі")
-    p.add_argument("--snapshot", help="JSON-файл зі знімком (інакше — свіжий знімок з Bybit)")
+    p.add_argument("--snapshot", help="JSON-файл зі знімком (інакше — свіжий знімок з MT5)")
     asyncio.run(_main(p.parse_args().snapshot))

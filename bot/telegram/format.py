@@ -12,12 +12,9 @@ DIRECTION_EMOJI = {"long": "🟢", "short": "🔴", "wait": "⚪"}
 ACTION_UA = {"long": "ЛОНГ", "short": "ШОРТ", "wait": "ЧЕКАТИ"}
 CONFIDENCE_UA = {"low": "низька", "medium": "середня", "high": "висока"}
 MISSING_UA = {
-    "oi": "open interest",
-    "ls": "long/short ratio",
-    "ticker": "тікер",
+    "tick": "поточний тік",
+    "tick_activity": "тікова активність",
     "news": "новини",
-    "trades_ws": "стрічка угод",
-    "orderbook_ws": "стакан",
     "kline_1": "1-хв свічки",
     "kline_15": "15-хв свічки",
     "kline_60": "60-хв свічки",
@@ -47,14 +44,12 @@ def fmt_price(x: float | None, tick: float | None) -> str:
     return "—" if x is None else f"{x:.{decimals(tick)}f}"
 
 
-def fmt_usdt(x: float) -> str:
-    sign = "+" if x > 0 else "−" if x < 0 else ""
-    a = abs(x)
-    if a >= 1e6:
-        return f"{sign}{a / 1e6:.1f} млн"
-    if a >= 1e3:
-        return f"{sign}{a / 1e3:.0f} тис"
-    return f"{sign}{a:.0f}"
+def plural_triggers(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} тригер"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} тригери"
+    return f"{n} тригерів"
 
 
 def _missing_line(missing: list[str]) -> str | None:
@@ -110,35 +105,30 @@ def format_failure(error: str, snapshot: dict | None, *, symbol: str, tz: str, t
     lines = [f"⚠️ <b>{escape(symbol)}</b>: аналіз недоступний", escape(error)]
     if snapshot:
         tf5 = snapshot.get("tf_5m", {})
-        flow = (snapshot.get("order_flow") or {}).get("windows", {}).get("5m", {})
-        book = snapshot.get("orderbook") or {}
-        oi = snapshot.get("open_interest") or {}
-        t = snapshot.get("ticker") or {}
+        q = snapshot.get("quote") or {}
+        act = snapshot.get("tick_activity") or {}
         lines += ["", f"Сирі дані{' на ' + fmt_time(ts_ms, tz) if ts_ms else ''}:"]
         lines.append(f"Ціна {fmt_price(snapshot.get('price'), tick)} · RSI {tf5.get('rsi', '—')} · "
                      f"ATR {tf5.get('atr_pct', '—')}%")
         lines.append(f"Підтримка {fmt_price(tf5.get('support'), tick)} · Опір {fmt_price(tf5.get('resistance'), tick)}")
-        if flow:
-            lines.append(f"Кити 5 хв: {fmt_usdt(flow.get('whale_delta_usdt', 0))} USDT · "
-                         f"CVD 5 хв: {fmt_usdt(flow.get('cvd_usdt', 0))}")
-        if book:
-            lines.append(f"Стакан bid/ask: {book['bid_share'] * 100:.0f}/{(1 - book['bid_share']) * 100:.0f}")
-        if oi.get("change_15m_pct") is not None:
-            lines.append(f"OI за 15 хв: {oi['change_15m_pct']:+.2f}%")
-        if t.get("funding_rate_pct") is not None:
-            lines.append(f"Funding: {t['funding_rate_pct']:+.4f}%")
+        if q.get("spread_points") is not None:
+            lines.append(f"Спред {q['spread_points']:.0f} п. ({q.get('spread_pct')}%)")
+        if act.get("ticks_5m") is not None:
+            lines.append(f"Тіків за 5 хв: {act['ticks_5m']} (×{act.get('ratio_5m') or '—'} від звичайного)")
     return "\n".join(lines)
 
 
 def format_status(
-    *, symbol: str, price: float | None, tick: float | None, ws_connected: bool, ws_age: float | None,
-    alerts_on: bool, sensitivity: str, need: int, dry_run: bool, next_event: str | None, tz: str,
+    *, symbol: str, price: float | None, tick: float | None, mt5_connected: bool, tick_age: float | None,
+    mt5_error: str | None = None, alerts_on: bool, sensitivity: str, need: int, dry_run: bool, next_event: str | None, tz: str,
     news_ok: bool, predictions: int, model: str,
 ) -> str:
-    age = "немає даних" if ws_age is None else f"{ws_age:.0f} с тому"
+    age = "немає даних" if tick_age is None else f"{tick_age:.0f} с тому"
+    mt5 = f"🟢 підключено, останній тік {age}" if mt5_connected else (
+        "🔴 немає зв'язку" + (f" ({escape(mt5_error)})" if mt5_error else ""))
     lines = [
         f"<b>{escape(symbol)}</b> · ціна {fmt_price(price, tick)}",
-        f"WebSocket: {'🟢 підключено' if ws_connected else '🔴 відключено'}, останні дані {age}",
+        f"MT5: {mt5}",
         f"Новини: {'🟢' if news_ok else '🔴 недоступні'}",
         f"Сповіщення: {'увімкнені' if alerts_on else 'вимкнені'}{' (dry-run)' if dry_run else ''}, "
         f"чутливість {sensitivity} (тригерів: {need})",

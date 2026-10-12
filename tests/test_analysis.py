@@ -111,7 +111,7 @@ def _analyzer(msgs, model="claude-opus-5-5", **cfg_update):
     return Analyzer(cfg, secrets, client)
 
 
-SNAP = {"time_utc": "2026-10-12 14:32:10", "price": 61.42, "ticker": {"spread_pct": 0.02}}
+SNAP = {"time_utc": "2026-10-12 14:32:10", "price": 61.42, "quote": {"spread_pct": 0.02}}
 
 
 async def test_analyze_success_and_request_shape():
@@ -123,7 +123,7 @@ async def test_analyze_success_and_request_shape():
     assert call["output_config"]["format"]["schema"] is RESPONSE_SCHEMA
     assert call["output_config"]["effort"] == "medium"
     assert call["fallbacks"] == "default" and call["betas"] == ["server-side-fallback-2026-07-01"]
-    assert "USOUSDT" in call["system"] and "{symbol}" not in call["system"]
+    assert "USOUSD.s" in call["system"] and "{symbol}" not in call["system"]
     assert '"price":61.42' in call["messages"][0]["content"]
 
 

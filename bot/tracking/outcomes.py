@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from bot.market.bybit_rest import BybitError, BybitRest
+from bot.market.mt5_source import MT5Error, MT5Source
 from bot.tracking.db import Database, PredictionRow
 
 log = logging.getLogger(__name__)
@@ -60,9 +60,9 @@ def evaluate(p: PredictionRow, horizon_min: int, k1: pd.DataFrame) -> Outcome | 
 
 
 class OutcomeChecker:
-    def __init__(self, db: Database, rest: BybitRest, horizons: list[int], interval_sec: float = 30):
+    def __init__(self, db: Database, source: MT5Source, horizons: list[int], interval_sec: float = 30):
         self.db = db
-        self.rest = rest
+        self.source = source
         self.horizons = horizons
         self.interval_sec = interval_sec
         self._stop = asyncio.Event()
@@ -78,9 +78,9 @@ class OutcomeChecker:
                     start = (p.created_ms // MINUTE) * MINUTE
                     max_h = max(self.horizons)
                     end = min(start + (max_h + 1) * MINUTE, now_ms)
-                    cache[p.id] = await self.rest.klines(1, limit=max_h + 3, start_ms=start, end_ms=end, now_ms=now_ms)
+                    cache[p.id] = await self.source.klines(1, limit=max_h + 3, start_ms=start, end_ms=end, now_ms=now_ms)
                 outcome = evaluate(p, h, cache[p.id])
-            except BybitError as exc:
+            except MT5Error as exc:
                 log.warning("Перевірка прогнозу %d: %s", p.id, exc)
                 continue
             if outcome is None:

@@ -1,4 +1,3 @@
-import time
 
 import pandas as pd
 import pytest
@@ -6,8 +5,7 @@ import pytest
 from bot.tracking.db import Database, PredictionRow
 from bot.tracking.outcomes import OutcomeChecker, evaluate
 from bot.tracking.stats import LOSS, NEUTRAL, WIN, bucket, classify, compute, export_csv
-from tests.fake_bybit import FakeBybit, rest_client
-from tests.helpers import CFG
+from tests.conftest import mt5_market
 
 T0 = 1_760_000_000_000 // 60_000 * 60_000 + 20_000   # прогноз о :20 с
 
@@ -55,15 +53,16 @@ def test_evaluate_waits_for_closed_candle():
 async def test_checker_writes_three_horizons(tmp_path):
     db = Database(tmp_path / "x.db")
     await db.connect()
-    fake = FakeBybit()
-    now = fake.now_ms
+    market, fake = mt5_market()
+    await market.source.connect()
+    now = int(fake.now * 1000)
     pid = await db.insert_prediction(created_ms=now - 17 * 60_000, source="manual", price=61.0,
                                      response={"action": "long", "long_pct": 60, "short_pct": 40,
                                                "entry": 61.0, "stop_loss": 60.0, "take_profit": 62.0},
                                      snapshot={"x": 1}, baseline_direction="up")
     young = await db.insert_prediction(created_ms=now - 7 * 60_000, source="manual", price=61.0,
                                        response={"action": "wait"}, snapshot={})
-    checker = OutcomeChecker(db, rest_client(fake, CFG), [5, 10, 15])
+    checker = OutcomeChecker(db, market.source, [5, 10, 15])
     assert await checker.check_once(now) == 4   # 3 для старого + 5 хв для молодшого
     rows = {r["id"]: r for r in await db.predictions_with_outcomes()}
     assert set(rows[pid]["outcomes"]) == {5, 10, 15}

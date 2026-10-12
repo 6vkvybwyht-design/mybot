@@ -31,18 +31,6 @@ def _check_tz(value: str) -> str:
     return value
 
 
-class MarketConfig(_Model):
-    symbol: str
-    category: Literal["linear", "inverse", "spot"] = "linear"
-    taker_fee_pct: float = Field(ge=0, lt=1)
-    rest_base_url: str
-    ws_public_url: str
-    orderbook_depth: Literal[1, 50, 200, 500] = 50
-    kline_intervals: list[int]
-    kline_limit: int = Field(ge=50, le=1000)
-    trades_window_hours: int = Field(ge=1, le=72)
-
-
 MT5_TIMEFRAMES = (1, 5, 15, 60)
 
 
@@ -53,6 +41,8 @@ class MT5Config(_Model):
     bars: int = Field(ge=50, le=5000, default=200)
     # Час сервера MT5 зазвичай не UTC. auto — визначити за свіжим тіком; або число годин, напр. 3
     server_utc_offset_hours: float | Literal["auto"] = "auto"
+    # Якщо auto не спрацювало (ринок закритий на старті) — до першого свіжого тіка
+    server_utc_offset_fallback_hours: float = Field(ge=-14, le=14, default=3)
     tick_window_min: int = Field(ge=10, le=24 * 60, default=60)
     tick_max_count: int = Field(gt=0, default=200_000)
     init_timeout_ms: int = Field(gt=0, default=60_000)
@@ -74,12 +64,11 @@ class NetworkConfig(_Model):
     timeout_sec: float = Field(gt=0)
     retries: int = Field(ge=0, le=10)
     backoff_base_sec: float = Field(gt=0)
-    ws_ping_interval_sec: int = Field(gt=0)
-    ws_stale_sec: int = Field(gt=0)
-    ws_alarm_sec: int = Field(gt=0)
 
 
 class WhalesConfig(_Model):
+    """Аналіз китів зі стрічки угод. Для CFD у MT5 стрічки немає — зараз не використовується."""
+
     threshold_mode: Literal["percentile", "fixed"]
     percentile: float = Field(gt=50, lt=100)
     fixed_usdt: float = Field(gt=0)
@@ -126,14 +115,14 @@ class AnalysisConfig(_Model):
     event_warning_min: int = Field(ge=0)
 
 
+DIRECTIONAL_TRIGGERS = 3   # тіковий обсяг, імпульс, пробій (спред — лише попередження)
+
+
 class TriggersConfig(_Model):
-    whales_delta_mult: float = Field(gt=0)
-    volume_mult: float = Field(gt=0)
-    oi_change_pct_15m: float = Field(gt=0)
-    orderbook_band_pct: float = Field(gt=0)
-    orderbook_imbalance: float = Field(gt=0.5, lt=1)
-    orderbook_hold_sec: int = Field(ge=0)
-    impulse_atr_mult: float = Field(gt=0)
+    tick_volume_mult: float = Field(gt=0)        # тіків за 5 хв > N × звичайний темп
+    impulse_atr_mult: float = Field(gt=0)        # рух за 1 хв > N × ATR(14) на 5 хв
+    breakout_spread_mult: float = Field(ge=0)    # закриття за рівнем щонайменше на N спредів
+    spread_widen_mult: float = Field(gt=1)       # спред > N × медіана за годину — попередження
 
 
 class AlertsConfig(_Model):
@@ -157,6 +146,9 @@ class AlertsConfig(_Model):
         missing = {"low", "medium", "high"} - v.keys()
         if missing:
             raise ValueError(f"не задано рівні чутливості: {sorted(missing)}")
+        bad = {k: n for k, n in v.items() if not 1 <= n <= DIRECTIONAL_TRIGGERS}
+        if bad:
+            raise ValueError(f"кількість тригерів має бути від 1 до {DIRECTIONAL_TRIGGERS}: {bad}")
         return v
 
 
@@ -225,10 +217,8 @@ class CalendarConfig(_Model):
 
 
 class AppConfig(_Model):
-    market: MarketConfig
     mt5: MT5Config
     network: NetworkConfig
-    whales: WhalesConfig
     indicators: IndicatorsConfig
     news: NewsConfig
     analysis: AnalysisConfig

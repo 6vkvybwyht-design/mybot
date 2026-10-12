@@ -1,18 +1,6 @@
 # Налаштування бота. Секрети — лише в .env, тут їх бути не повинно.
 # Усі часи — UTC, якщо не вказано інше.
 
-market:
-  symbol: USOUSDT
-  category: linear
-  # Комісія taker у відсотках за одну сторону угоди (0.055 = 0,055%)
-  taker_fee_pct: 0.055
-  rest_base_url: https://api.bybit.com
-  ws_public_url: wss://stream.bybit.com/v5/public/linear
-  orderbook_depth: 50
-  kline_intervals: [1, 5, 15, 60]   # хвилини
-  kline_limit: 200                  # скільки свічок тягнути на кожен таймфрейм
-  trades_window_hours: 24           # ковзне вікно угод у пам'яті
-
 # MetaTrader 5 (Bybit TradFi, брокер Infra Capital Limited). Логін/пароль/сервер — у .env.
 mt5:
   symbol: USOUSD.s                  # CFD на нафту WTI
@@ -22,6 +10,7 @@ mt5:
   # Зсув часу сервера MT5 від UTC у годинах. auto — за свіжим тіком
   # (коли ринок закритий, визначити неможливо — тоді краще вказати число).
   server_utc_offset_hours: auto
+  server_utc_offset_fallback_hours: 3   # Bybit-Live-6 влітку (жовтень 2026) — UTC+3
   tick_window_min: 60               # вікно для тікової активності
   tick_max_count: 200000
   init_timeout_ms: 60000            # очікування запуску/відповіді терміналу
@@ -32,16 +21,6 @@ network:
   timeout_sec: 10
   retries: 3
   backoff_base_sec: 1.0             # затримка: 1, 2, 4 ... с
-  ws_ping_interval_sec: 20
-  ws_stale_sec: 30                  # тригери не рахуються, якщо даних немає довше
-  ws_alarm_sec: 120                 # після цього бот пише про проблему з'єднання
-
-whales:
-  threshold_mode: percentile        # percentile | fixed
-  percentile: 99                    # для режиму percentile, за останні 24 год
-  fixed_usdt: 50000                 # для режиму fixed
-  merge_window_ms: 1000             # склеювання угод в одному напрямку
-  windows_min: [1, 5, 15]
 
 indicators:
   rsi_period: 14
@@ -135,10 +114,12 @@ alerts:
   dry_run: false                    # true — сигнали лише логуються, не надсилаються
   loop_interval_sec: 15
   sensitivity: medium               # low | medium | high
-  sensitivity_levels:               # скільки тригерів в одному напрямку потрібно
-    high: 2
-    medium: 3
-    low: 4
+  # Скільки тригерів в одному напрямку потрібно. Напрямкових тригерів три:
+  # тіковий обсяг, імпульс, пробій рівня (спред — лише попередження).
+  sensitivity_levels:
+    high: 1
+    medium: 2
+    low: 3
   cooldown_min: 12
   opposite_cooldown_min: 5
   min_model_pct: 60                 # нижче — сповіщення не надсилається
@@ -147,13 +128,10 @@ alerts:
   quiet_before_event_min: 15
   quiet_after_event_min: 15
   triggers:
-    whales_delta_mult: 3.0          # дельта китів за 5 хв > N × середнє |дельти| за 24 год
-    volume_mult: 2.5                # обсяг 5-хв свічки > N × середнє за 20 свічок
-    oi_change_pct_15m: 1.0          # зміна OI за 15 хв, %
-    orderbook_band_pct: 0.3         # ±% від ціни
-    orderbook_imbalance: 0.70       # частка однієї сторони
-    orderbook_hold_sec: 30
+    tick_volume_mult: 2.5           # тіків за 5 хв > N × звичайний темп за годину
     impulse_atr_mult: 1.0           # рух за 1 хв > N × ATR(14) на 5 хв
+    breakout_spread_mult: 2.0       # закриття 5-хв свічки за рівнем щонайменше на N спредів
+    spread_widen_mult: 2.0          # спред > N × медіана за годину — попередження, не сигнал
 
 tracking:
   horizons_min: [5, 10, 15]

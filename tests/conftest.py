@@ -1,5 +1,4 @@
 import json
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -7,17 +6,16 @@ import pytest
 from bot.analysis import Analyzer
 from bot.app import App
 from bot.config import Secrets
-from bot.market.bybit_ws import BybitWS
-from bot.market.trades import Trade
+from bot.market.mt5_source import Credentials, MT5Source
 from bot.news.calendar import EventCalendar
 from bot.snapshot import MarketService
 from bot.tracking.db import Database
-from tests.fake_bybit import FakeBybit, rest_client
+from tests.fake_mt5 import FakeMT5
 from tests.helpers import CFG
 
 LONG = {"action": "long", "long_pct": 68, "short_pct": 32, "confidence": "medium", "summary": "Покупці <сильні>.",
-        "reasons": ["Кити +1.9 млн", "Пробій 61.35"], "entry": 61.0, "stop_loss": 60.8, "take_profit": 61.4,
-        "risk_flags": ["funding & OI"]}
+        "reasons": ["Тіків ×2.8", "Пробій 61.35"], "entry": 61.0, "stop_loss": 60.8, "take_profit": 61.4,
+        "risk_flags": ["EIA & ОПЕК+"]}
 SHORT = {**LONG, "action": "short", "long_pct": 30, "short_pct": 70, "entry": 61.0, "stop_loss": 61.2,
          "take_profit": 60.6}
 WAIT = {**LONG, "action": "wait", "long_pct": 52, "short_pct": 48, "entry": None, "stop_loss": None,
@@ -39,20 +37,17 @@ class FakeModel:
         return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
 
 
-def feed_ws(market, price=61.0):
-    now = int(time.time() * 1000)
-    for i in range(300):
-        market.ws.trades.add(Trade(now - 600_000 + i * 2000, price, 3.0, 1 if i % 3 else -1))
-    market.ws.book.apply("snapshot", {"b": [[str(price - 0.01), "500"]], "a": [[str(price + 0.01), "300"]], "u": 1})
-    market.ws.last_msg_ms = now
+def mt5_market(fake=None, cfg=CFG):
+    """MarketService на фейковому MetaTrader5 (без терміналу)."""
+    fake = fake or FakeMT5()
+    src = MT5Source(cfg.mt5, Credentials(), mt5_module=fake, clock=lambda: fake.now)
+    return MarketService(cfg, source=src), fake
 
 
 @pytest.fixture
 async def app(tmp_path):
-    fake = FakeBybit()
-    market = MarketService(CFG, rest=rest_client(fake, CFG), ws=BybitWS(CFG.market, CFG.network))
-    await market.start(with_ws=False)
-    feed_ws(market)
+    market, fake = mt5_market()
+    await market.source.connect()
     db = Database(tmp_path / "t.db")
     await db.connect()
     model = FakeModel()
@@ -62,6 +57,6 @@ async def app(tmp_path):
     a = App(CFG, db=db, market=market, news=None, calendar=EventCalendar(CFG.calendar.model_copy(
         update={"recurring": []})), analyzer=analyzer)
     a.fake_model = model
-    a.fake_bybit = fake
+    a.fake_mt5 = fake
     yield a
     await db.close()
