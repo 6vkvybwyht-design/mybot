@@ -1,32 +1,42 @@
 # Налаштування бота. Секрети — лише в .env, тут їх бути не повинно.
 # Усі часи — UTC, якщо не вказано інше.
 
+# MetaTrader 5 (Bybit TradFi, брокер Infra Capital Limited). Логін/пароль/сервер — у .env.
+mt5:
+  symbol: USOUSD.s                  # CFD на нафту WTI
+  symbol_search: "*USO*"            # маска для перевірки символу при старті
+  timeframes: [1, 5, 15, 60]        # хвилини: M1, M5, M15, H1
+  bars: 200                         # скільки свічок тягнути на кожен таймфрейм
+  # Зсув часу сервера MT5 від UTC у годинах. auto — за свіжим тіком
+  # (коли ринок закритий, визначити неможливо — тоді краще вказати число).
+  server_utc_offset_hours: auto
+  server_utc_offset_fallback_hours: 3   # Bybit-Live-6 влітку (жовтень 2026) — UTC+3
+  tick_window_min: 60               # вікно для тікової активності
+  tick_max_count: 200000
+  init_timeout_ms: 60000            # очікування запуску/відповіді терміналу
+  health_check_sec: 15              # як часто перевіряти зв'язок з терміналом
+  reconnect_max_sec: 300            # макс. пауза між спробами перепідключення
+
 market:
-  symbol: USOUSDT
-  category: linear
-  # Комісія taker у відсотках за одну сторону угоди (0.055 = 0,055%)
-  taker_fee_pct: 0.055
-  rest_base_url: https://api.bybit.com
-  ws_public_url: wss://stream.bybit.com/v5/public/linear
-  orderbook_depth: 50
-  kline_intervals: [1, 5, 15, 60]   # хвилини
-  kline_limit: 200                  # скільки свічок тягнути на кожен таймфрейм
-  trades_window_hours: 24           # ковзне вікно угод у пам'яті
+  # Витрати на угоду = поточний спред (береться з MT5 у момент аналізу) + комісія.
+  # Комісія брокера за одну сторону, % (0 — якщо брокер бере лише спред).
+  commission_pct: 0.0
+  # Ринок вважається закритим, якщо нових тіків немає довше (с) або сесія закрита за розкладом.
+  # Тоді бот відповідає «ринок закритий» і не шле автосповіщень.
+  no_ticks_closed_sec: 120
+  # Розклад як у ф'ючерса WTI на CME (час Нью-Йорка): тиждень з неділі 18:00 до п'ятниці 17:00,
+  # щоденна перерва 17:00–18:00. Якщо у брокера інакше — виправте тут
+  # (week_open = week_close — без вихідних; daily_break: null — без перерви).
+  session:
+    tz: America/New_York
+    week_open: {weekday: sun, time: "18:00"}
+    week_close: {weekday: fri, time: "17:00"}
+    daily_break: ["17:00", "18:00"]
 
 network:
   timeout_sec: 10
   retries: 3
   backoff_base_sec: 1.0             # затримка: 1, 2, 4 ... с
-  ws_ping_interval_sec: 20
-  ws_stale_sec: 30                  # тригери не рахуються, якщо даних немає довше
-  ws_alarm_sec: 120                 # після цього бот пише про проблему з'єднання
-
-whales:
-  threshold_mode: percentile        # percentile | fixed
-  percentile: 99                    # для режиму percentile, за останні 24 год
-  fixed_usdt: 50000                 # для режиму fixed
-  merge_window_ms: 1000             # склеювання угод в одному напрямку
-  windows_min: [1, 5, 15]
 
 indicators:
   rsi_period: 14
@@ -42,18 +52,50 @@ news:
   poll_interval_sec: 150
   max_age_min: 60
   max_headlines: 15
-  # Конкретні стрічки перевіряються на етапі 3
+  # Перевірено 2026-10-12: усі віддають 200 і мають дату публікації
+  # (крім Investing Energy — для неї береться час, коли бот уперше побачив новину).
   feeds:
-    - name: Reuters World (via Google News)
-      url: https://news.google.com/rss/search?q=oil+OR+crude+when:1h&hl=en-US&gl=US&ceid=US:en
+    - name: Google News · oil
+      url: https://news.google.com/rss/search?q=oil+OR+crude+OR+OPEC+when:1h&hl=en-US&gl=US&ceid=US:en
+    - name: Google News · EIA/inventories
+      url: https://news.google.com/rss/search?q=EIA+OR+%22crude+inventories%22+OR+%22oil+stocks%22+when:1h&hl=en-US&gl=US&ceid=US:en
     - name: OilPrice.com
       url: https://oilprice.com/rss/main
+    - name: Rigzone
+      url: https://www.rigzone.com/news/rss/rigzone_latest.aspx
+    - name: Guardian · oil
+      url: https://www.theguardian.com/business/oil/rss
+    - name: Investing · energy
+      url: https://www.investing.com/rss/commodities_Energy.rss
+    - name: Investing · economy
+      url: https://www.investing.com/rss/news_11.rss
+    - name: MarketWatch
+      url: https://feeds.content.dowjones.io/public/rss/mw_topstories
     - name: BBC World
       url: https://feeds.bbci.co.uk/news/world/rss.xml
+    - name: BBC Business
+      url: https://feeds.bbci.co.uk/news/business/rss.xml
+    - name: Al Jazeera
+      url: https://www.aljazeera.com/xml/rss/all.xml
   keywords:
     - oil
     - crude
-    - brent
+    - brent crude
+    - gasoline
+    - natural gas
+    - hormuz
+    - houthi
+    - red sea
+    - venezuela
+    - libya
+    - iraq
+    - ukraine
+    - drone strike
+    - interest rate
+    - rate cut
+    - jobs report
+    - nonfarm
+    - recession
     - wti
     - opec
     - eia
@@ -64,7 +106,6 @@ news:
     - saudi
     - russia
     - israel
-    - strait of hormuz
     - sanctions
     - fed
     - powell
@@ -74,7 +115,12 @@ news:
 
 analysis:
   timeout_sec: 60
-  max_tokens: 1500
+  # Ліміт включає «роздуми» моделі, тому з запасом
+  max_tokens: 8000
+  # low | medium | high — глибина міркувань: вище = точніше, але довше і дорожче
+  effort: medium
+  # Якщо модель відмовиться відповідати (фільтр безпеки), API сам повторить запит на іншій моделі
+  refusal_fallback: true
   prompt_file: prompts/analysis.md
   max_pct_without_confirmation: 75
   event_warning_min: 15
@@ -84,30 +130,32 @@ alerts:
   dry_run: false                    # true — сигнали лише логуються, не надсилаються
   loop_interval_sec: 15
   sensitivity: medium               # low | medium | high
-  sensitivity_levels:               # скільки тригерів в одному напрямку потрібно
-    high: 2
-    medium: 3
-    low: 4
+  # Скільки тригерів в одному напрямку потрібно. Напрямкових тригерів три:
+  # тіковий обсяг, імпульс, пробій рівня (спред — лише попередження).
+  sensitivity_levels:
+    high: 1
+    medium: 2
+    low: 3
   cooldown_min: 12
   opposite_cooldown_min: 5
   min_model_pct: 60                 # нижче — сповіщення не надсилається
   max_model_calls_per_hour: 6
+  filtered_recheck_min: 3         # пауза після відфільтрованого моделлю сигналу
   quiet_before_event_min: 15
   quiet_after_event_min: 15
   triggers:
-    whales_delta_mult: 3.0          # дельта китів за 5 хв > N × середнє |дельти| за 24 год
-    volume_mult: 2.5                # обсяг 5-хв свічки > N × середнє за 20 свічок
-    oi_change_pct_15m: 1.0          # зміна OI за 15 хв, %
-    orderbook_band_pct: 0.3         # ±% від ціни
-    orderbook_imbalance: 0.70       # частка однієї сторони
-    orderbook_hold_sec: 30
+    tick_volume_mult: 2.5           # тіків за 5 хв > N × звичайний темп за годину
     impulse_atr_mult: 1.0           # рух за 1 хв > N × ATR(14) на 5 хв
+    breakout_spread_mult: 2.0       # закриття 5-хв свічки за рівнем щонайменше на N спредів
+    spread_widen_mult: 2.0          # спред > N × медіана за годину — попередження, не сигнал
 
 tracking:
   horizons_min: [5, 10, 15]
+  main_horizon_min: 5          # бот прогнозує 5-хв свічку: основна статистика — на 5 хв
 
 storage:
-  db_path: data/bot.db
+  # Окрема база для MT5-версії: прогнози Bybit (USOUSDT) не змішуються з USOUSD.s
+  db_path: data/bot_mt5.db
 
 logging:
   level: INFO
