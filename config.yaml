@@ -151,6 +151,7 @@ alerts:
 
 tracking:
   horizons_min: [5, 10, 15]
+  main_horizon_min: 5          # бот прогнозує 5-хв свічку: основна статистика — на 5 хв
 
 storage:
   # Окрема база для MT5-версії: прогнози Bybit (USOUSDT) не змішуються з USOUSD.s

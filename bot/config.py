@@ -180,6 +180,13 @@ class AlertsConfig(_Model):
 
 class TrackingConfig(_Model):
     horizons_min: list[int]
+    main_horizon_min: int = 5   # основна статистика; інші горизонти — додатково
+
+    @model_validator(mode="after")
+    def _main_in_horizons(self) -> "TrackingConfig":
+        if self.main_horizon_min not in self.horizons_min:
+            raise ValueError(f"main_horizon_min={self.main_horizon_min} має бути серед horizons_min")
+        return self
 
 
 class StorageConfig(_Model):

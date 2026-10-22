@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from html import escape
 from zoneinfo import ZoneInfo
 
-from bot.tracking.stats import Stats, Tally
+from bot.tracking.stats import HitRate, HorizonStats, PnL, Stats, Tally
 
 DIRECTION_EMOJI = {"long": "🟢", "short": "🔴", "wait": "⚪"}
 ACTION_UA = {"long": "ЛОНГ", "short": "ШОРТ", "wait": "ЧЕКАТИ"}
@@ -50,6 +50,14 @@ def plural_triggers(n: int) -> str:
     if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
         return f"{n} тригери"
     return f"{n} тригерів"
+
+
+def plural_trades(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} угода"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} угоди"
+    return f"{n} угод"
 
 
 def _missing_line(missing: list[str]) -> str | None:
@@ -149,47 +157,105 @@ def _pct(x: float | None) -> str:
     return "—" if x is None else f"{x:.0f}%"
 
 
-def _tally(t: Tally) -> str:
+def _rate(rate: float | None, ci: tuple[float, float] | None, n: int) -> str:
+    """«58% [44–71] з 48» — частка, 95% довірчий інтервал і розмір вибірки."""
+    if not n:
+        return "— з 0"
+    lo, hi = ci or (0.0, 100.0)
+    small = " ⚠️" if n < 30 else ""
+    return f"{rate:.0f}% [{lo:.0f}–{hi:.0f}] з {n}{small}"
+
+
+def _hr(h) -> str:
+    return _rate(h.rate, h.ci, h.n)
+
+
+def _signals(t: Tally) -> str:
     if not t.n:
         return "немає даних"
-    return f"{t.n} шт · вдалих {_pct(t.win_rate)} · невдалих {t.loss} · нейтр. {t.neutral}"
+    return f"вдалих {_rate(t.win_rate, t.ci, t.n)} · невдалих {t.loss} · нейтр. {t.neutral}"
 
 
-def format_stats(periods: list[tuple[str, Stats]], round_trip_pct: float) -> str:
+def _pnl(p: PnL) -> str:
+    if not p.n:
+        return "немає угод"
+    return (f"{plural_trades(p.n)} · сума {p.total:+.2f}% · макс. просадка {p.max_drawdown:.2f}% · "
+            f"в середньому {p.mean:+.3f}% · прибуткових {_hr(p.wins)}")
+
+
+def _verdict(model: HitRate, base: HitRate) -> str:
+    if not model.n:
+        return ""
+    m_lo, m_hi = model.ci
+    b_lo, b_hi = base.ci
+    if m_lo > b_hi:
+        return "бот краще"
+    if m_hi < b_lo:
+        return "бот гірше"
+    return "різниця в межах похибки"
+
+
+def _horizon_main(hs: HorizonStats) -> list[str]:
     from bot.triggers import NAMES_UA
 
-    parts = [f"<b>Статистика</b> (вдалий = рух у прогнозованому напрямку більший за витрати на угоду: "
-             f"спред + комісія на момент прогнозу, зараз ≈{round_trip_pct:.3f}%)"]
-    for title, st in periods:
-        h = st.main_horizon
+    h = hs.horizon
+    lines = [f"<b>Основне — {h} хв</b>", f"Сигнали лонг/шорт: {_signals(hs.signals)}"]
+    lines.append(f"«Чекати» (руху більшого за витрати не було): {_hr(hs.wait_ok)}")
+    lines.append("Калібрування (прогноз → напрямок вгадано):")
+    lines += [f"  {name}: {_hr(c)}" for name, c in hs.calibration.items()]
+    lines.append("Бот vs «як остання свічка» (усі прогнози з напрямком &gt; 50%):")
+    if hs.model_dir.n:
+        lines.append(f"  бот {_hr(hs.model_dir)}")
+        lines.append(f"  свічка {_hr(hs.baseline_dir)}")
+        lines.append(f"  → {_verdict(hs.model_dir, hs.baseline_dir)}")
+    else:
+        lines.append("  немає даних")
+    if hs.triggers:
+        lines.append("Тригери (напрямок вгадано):")
+        lines += [f"  {escape(NAMES_UA.get(k, k))}: {_hr(v)}" for k, v in sorted(hs.triggers.items())]
+    srcs = {"manual": "ручні", "alert": "авто", "alert_filtered": "відфільтр. (за тригерами)"}
+    s_lines = [f"  {srcs[k]}: {_rate(t.win_rate, t.ci, t.n)}" for k, t in hs.sources.items() if t.n]
+    if s_lines:
+        lines += ["Джерела (вдалих):"] + s_lines
+    lines.append(f"Гіпотетичний P&amp;L (угода на {h} хв, мінус спред і комісія):")
+    lines.append(f"  кожен прогноз з напрямком &gt; 50%: {_pnl(hs.pnl_all)}")
+    lines.append(f"  лише сигнали лонг/шорт: {_pnl(hs.pnl_signals)}")
+    return lines
+
+
+def _horizon_extra(hs: HorizonStats) -> list[str]:
+    cal = " · ".join(f"{name} {_pct(c.rate)} ({c.n})" for name, c in hs.calibration.items() if c.n)
+    lines = [
+        f"<b>{hs.horizon} хв</b>: сигнали — {_signals(hs.signals)}",
+        f"  «чекати» {_hr(hs.wait_ok)} · бот {_hr(hs.model_dir)} vs свічка {_hr(hs.baseline_dir)}",
+    ]
+    if cal:
+        lines.append(f"  калібрування: {cal}")
+    lines.append(f"  P&amp;L усіх з напрямком: {_pnl(hs.pnl_all)}")
+    return lines
+
+
+def format_stats(periods: list[tuple[str, Stats]], round_trip_pct: float) -> list[str]:
+    """Звіт статистики: одне повідомлення на період (щоб не впертися в ліміт Telegram 4096 символів)."""
+    header = (
+        "<b>Статистика</b>. Вдалий — рух у бік прогнозу більший за витрати (спред + комісія на момент "
+        f"прогнозу, зараз ≈{round_trip_pct:.3f}%). У дужках — 95% довірчий інтервал; ⚠️ — менше 30 прогнозів, "
+        "висновків ще не робіть."
+    )
+    messages = []
+    for i, (title, st) in enumerate(periods):
         src = st.by_source_count
-        lines = [
-            "",
+        lines = [header, ""] if i == 0 else []
+        lines.append(
             f"<b>{escape(title)}</b>: прогнозів {st.total} "
-            f"(ручних {src.get('manual', 0)}, авто {src.get('alert', 0)}, відфільтр. {src.get('alert_filtered', 0)})",
-        ]
-        if not st.total:
-            parts += lines
-            continue
-        for hz, t in st.horizons.items():
-            lines.append(f"{hz} хв: {_tally(t)}")
-        w = st.wait_ok.get(h)
-        if w and w.n:
-            lines.append(f"«Чекати» без сильного руху ({h} хв): {_pct(w.rate)} з {w.n}")
-        cal = [f"{name}: {_pct(c.rate)} ({c.n})" for name, c in st.calibration.items() if c.n]
-        if cal:
-            lines.append(f"Калібрування ({h} хв): " + " · ".join(cal))
-        srcs = {"manual": "ручні", "alert": "авто", "alert_filtered": "відфільтр. (за тригерами)"}
-        s_lines = [f"{srcs[k]} {_pct(t.win_rate)} ({t.n})" for k, t in st.sources.items() if t.n]
-        if s_lines:
-            lines.append("Джерела, вдалих: " + " · ".join(s_lines))
-        trig = [f"{NAMES_UA.get(k, k)} {_pct(v.rate)} ({v.n})" for k, v in sorted(st.triggers.items())]
-        if trig:
-            lines.append("Тригери, напрямок вгадано: " + " · ".join(trig))
-        m, b = st.model_vs_baseline
-        if m.n:
-            verdict = "краще" if (m.win_rate or 0) > (b.win_rate or 0) else "не краще"
-            lines.append(f"Бот vs «як остання свічка» ({h} хв): {_pct(m.win_rate)} vs {_pct(b.win_rate)} "
-                         f"на {m.n} прогнозах — бот {verdict}")
-        parts += lines
-    return "\n".join(parts)
+            f"(ручних {src.get('manual', 0)}, авто {src.get('alert', 0)}, відфільтр. {src.get('alert_filtered', 0)})"
+        )
+        if st.total:
+            lines += [""] + _horizon_main(st.main)
+            extra = [hs for h, hs in st.horizons.items() if h != st.main_horizon]
+            if extra:
+                lines += ["", "<b>Додатково</b>"]
+                for hs in extra:
+                    lines += _horizon_extra(hs)
+        messages.append("\n".join(lines))
+    return messages

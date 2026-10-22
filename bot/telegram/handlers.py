@@ -101,8 +101,9 @@ def build_router(app: App) -> Router:
         for title, days in (("7 днів", 7), ("30 днів", 30), ("Весь час", None)):
             since = now_ms - days * 86_400_000 if days else 0
             rows = await app.db.predictions_with_outcomes(since)
-            periods.append((title, compute(rows, horizons, rt)))
-        await m.answer(format_stats(periods, rt), reply_markup=kb())
+            periods.append((title, compute(rows, horizons, rt, app.cfg.tracking.main_horizon_min)))
+        for text in format_stats(periods, rt):
+            await m.answer(text, reply_markup=kb())
 
     @r.message(Command("export"))
     async def export(m: Message) -> None:

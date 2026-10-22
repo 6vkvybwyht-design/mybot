@@ -163,8 +163,8 @@ async def test_status_stats_export(tg, app):
     status = texts(await tg("/status"))[0]
     assert "USOUSD.s" in status and "MT5: 🟢 підключено" in status and "Модель: claude-opus-5-5" in status
     assert "ціна 61.000" in status and "Ринок: 🟢 відкритий" in status
-    stats = texts(await tg(BTN_STATS))[0]
-    assert "7 днів" in stats and "Весь час" in stats
+    stats = texts(await tg(BTN_STATS))
+    assert len(stats) == 3 and "7 днів" in stats[0] and "30 днів" in stats[1] and "Весь час" in stats[2]
     reqs = await tg("/export")
     assert "ще немає" in reqs[0].text
     await tg(BTN_ANALYZE)
@@ -207,8 +207,40 @@ def test_format_failure_without_snapshot():
 def test_format_stats_empty_and_full():
     from tests.test_tracking import row
     empty = format_stats([("7 днів", compute([], [5, 10, 15], 0.11))], 0.11)
-    assert "прогнозів 0" in empty
-    full = format_stats([("Весь час", compute([row(1, "manual", "long", 65, 0.5),
-                                                row(2, "alert", "short", 30, -0.3, "down", ["tick_volume"])],
-                                               [5, 10, 15], 0.11))], 0.11)
-    assert "Калібрування" in full and "тіковий обсяг" in full and "Бот vs" in full
+    assert len(empty) == 1 and "прогнозів 0" in empty[0] and "Основне" not in empty[0]
+    rows = [row(1, "manual", "long", 65, {5: 0.5, 10: 0.2, 15: -0.3}),
+            row(2, "alert", "short", 30, -0.3, "down", ["breakout", "impulse"]),
+            row(3, "manual", "wait", 52, 0.01)]
+    full = format_stats([("Весь час", compute(rows, [5, 10, 15], 0.11))], 0.11)[0]
+    main = full[full.index("Основне — 5 хв"):full.index("Додатково")]
+    for part in ("50–55%: 100% [21–100] з 1 ⚠️", "55–60%: — з 0", "65–70%: 100%", "70%+: 100%",
+                 "«Чекати» (руху більшого за витрати не було): 100%", "пробій рівня: 100%", "імпульс: 100%",
+                 "бот 100% [44–100] з 3 ⚠️", "свічка", "різниця в межах похибки",
+                 "кожен прогноз з напрямком &gt; 50%: 3 угоди", "макс. просадка", "лише сигнали лонг/шорт: 2 угоди"):
+        assert part in main, part
+    extra = full[full.index("Додатково"):]
+    assert "<b>10 хв</b>" in extra and "<b>15 хв</b>" in extra and "<b>5 хв</b>" not in extra
+
+
+def test_plural_trades():
+    from bot.telegram.format import plural_trades
+    assert [plural_trades(n) for n in (1, 3, 5, 11, 12, 21, 134)] == [
+        "1 угода", "3 угоди", "5 угод", "11 угод", "12 угод", "21 угода", "134 угоди"]
+
+
+def test_format_stats_large_dataset_fits_telegram():
+    import random
+    from tests.test_tracking import row
+    rnd = random.Random(1)
+    rows = [row(i, rnd.choice(["manual", "alert", "alert_filtered"]), rnd.choice(["long", "short", "wait"]),
+                rnd.randint(30, 80), {h: rnd.gauss(0, 0.3) for h in (5, 10, 15)}, rnd.choice(["up", "down"]),
+                rnd.sample(["breakout", "impulse", "tick_volume"], 2), rnd.choice(["up", "down", "flat"]),
+                cost=0.03) for i in range(3000)]
+    st = compute(rows, [5, 10, 15], 0.11)
+    msgs = format_stats([("7 днів", st), ("30 днів", st), ("Весь час", st)], 0.11)
+    assert len(msgs) == 3 and all(len(m) < 4096 for m in msgs)
+    assert "⚠️" not in msgs[1].split("Додатково")[0]   # великі вибірки без позначки «замало»
+    # на випадкових даних бот не має «перемагати» свічку статистично значуще
+    assert "різниця в межах похибки" in msgs[0] or "бот гірше" in msgs[0] or "бот краще" in msgs[0]
+
+
